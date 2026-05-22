@@ -31,8 +31,8 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--lr_policy', type=str, default='linear', help='learning rate policy. [linear | step | plateau | cosine]')
         parser.add_argument('--lr_decay_iters', type=int, default=50, help='multiply by a gamma every lr_decay_iters iterations')
 
-        parser.add_argument('--counter', type=int, default=0, help='')
-        parser.add_argument('--data_size', type=int, default=0, help='')
+        parser.add_argument('--counter', type=int, default=0, help='running count of training samples seen (set automatically)')
+        parser.add_argument('--data_size', type=int, default=0, help='number of training samples in the dataset (set automatically)')
 
         self.isTrain = True
         return parser

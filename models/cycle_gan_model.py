@@ -65,6 +65,7 @@ class CycleGANModel(BaseModel):
         self.dual_channel = (opt.input_nc == 2)
         if self.dual_channel:
             visual_names_A = ["real_A_bf", "real_A_af", "fake_B", "rec_A_bf", "rec_A_af"]
+            visual_names_B = ["real_B", "fake_A_bf", "fake_A_af", "rec_B"]
         if self.isTrain and self.opt.lambda_identity > 0.0:  # if identity loss is used, we also visualize idt_B=G_A(B) ad idt_A=G_B(A)
             visual_names_A.append("idt_B")
             visual_names_B.append("idt_A")
@@ -79,7 +80,12 @@ class CycleGANModel(BaseModel):
         # define networks (both Generators and discriminators)
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
-        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
+        netG_A_type = opt.netG
+        if opt.input_nc == 2 and netG_A_type == "resnet_9blocks":
+            netG_A_type = "dual_resnet_9blocks"
+        elif opt.input_nc == 2 and netG_A_type == "resnet_6blocks":
+            netG_A_type = "dual_resnet_6blocks"
+        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_A_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
         if self.isTrain:  # define discriminators
@@ -131,6 +137,8 @@ class CycleGANModel(BaseModel):
             self.real_A_af = self.real_A[:, 1:2, :, :].repeat(1, 3, 1, 1)
             self.rec_A_bf = self.rec_A[:, 0:1, :, :].repeat(1, 3, 1, 1)
             self.rec_A_af = self.rec_A[:, 1:2, :, :].repeat(1, 3, 1, 1)
+            self.fake_A_bf = self.fake_A[:, 0:1, :, :].repeat(1, 3, 1, 1)
+            self.fake_A_af = self.fake_A[:, 1:2, :, :].repeat(1, 3, 1, 1)
 
     def backward_D_basic(self, netD, real, fake):
         """Calculate GAN loss for the discriminator

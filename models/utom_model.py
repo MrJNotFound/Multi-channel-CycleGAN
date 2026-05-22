@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import itertools
 from util.image_pool import ImagePool
 from .base_model import BaseModel
@@ -8,12 +9,15 @@ import numpy as np
 
 class UTOMModel(BaseModel):
     """
-    This class implements the CycleGAN model, for learning image-to-image translation without paired data.
+    UTOM (Unpaired Translation with Overlapping Modalities) model based on CycleGAN.
 
-    The model training requires '--dataset_mode unaligned' dataset.
+    Extends CycleGAN with structure-preserving content loss computed in the
+    gradient domain via Sobel edge detection. Designed for dual-channel (BF + AF)
+    virtual H&E staining with a dedicated DualBranchResnetGenerator.
+
+    The model training requires '--dataset_mode dual_channel' dataset.
     By default, it uses a '--netG resnet_9blocks' ResNet generator,
-    a '--netD basic' discriminator (PatchGAN introduced by pix2pix),
-    and a least-square GANs objective ('--gan_mode lsgan').
+    a '--netD basic' discriminator (PatchGAN), and LSGAN objective.
 
     CycleGAN paper: https://arxiv.org/pdf/1703.10593.pdf
     """
@@ -42,8 +46,6 @@ class UTOMModel(BaseModel):
         if is_train:
             parser.add_argument("--lambda_A", type=float, default=10.0, help="weight for cycle loss (A -> B -> A)")
             parser.add_argument("--lambda_B", type=float, default=10.0, help="weight for cycle loss (B -> A -> B)")
-            parser.add_argument('--threshold_A', type=float, default=104, help='weight for cycle loss (A -> B -> A)')
-            parser.add_argument('--threshold_B', type=float, default=210, help='weight for cycle loss (B -> A -> B)')
             parser.add_argument(
                 "--lambda_identity",
                 type=float,
@@ -54,20 +56,21 @@ class UTOMModel(BaseModel):
         return parser
 
     def __init__(self, opt):
-        """Initialize the CycleGAN class.
+        """Initialize the UTOM model.
 
         Parameters:
             opt (Option class)-- stores all the experiment flags; needs to be a subclass of BaseOptions
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B"]
+        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B", "content"]
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_A = ["real_A", "fake_B", "rec_A"]
         visual_names_B = ["real_B", "fake_A", "rec_B"]
         self.dual_channel = (opt.input_nc == 2)
         if self.dual_channel:
             visual_names_A = ["real_A_bf", "real_A_af", "fake_B", "rec_A_bf", "rec_A_af"]
+            visual_names_B = ["real_B", "fake_A_bf", "fake_A_af", "rec_B"]
         if self.isTrain and self.opt.lambda_identity > 0.0:  # if identity loss is used, we also visualize idt_B=G_A(B) ad idt_A=G_B(A)
             visual_names_A.append("idt_B")
             visual_names_B.append("idt_A")
@@ -82,7 +85,12 @@ class UTOMModel(BaseModel):
         # define networks (both Generators and discriminators)
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
-        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
+        netG_A_type = opt.netG
+        if opt.input_nc == 2 and netG_A_type == "resnet_9blocks":
+            netG_A_type = "dual_resnet_9blocks"
+        elif opt.input_nc == 2 and netG_A_type == "resnet_6blocks":
+            netG_A_type = "dual_resnet_6blocks"
+        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_A_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
         if self.isTrain:  # define discriminators
@@ -133,6 +141,8 @@ class UTOMModel(BaseModel):
             self.real_A_af = self.real_A[:, 1:2, :, :].repeat(1, 3, 1, 1)
             self.rec_A_bf = self.rec_A[:, 0:1, :, :].repeat(1, 3, 1, 1)
             self.rec_A_af = self.rec_A[:, 1:2, :, :].repeat(1, 3, 1, 1)
+            self.fake_A_bf = self.fake_A[:, 0:1, :, :].repeat(1, 3, 1, 1)
+            self.fake_A_af = self.fake_A[:, 1:2, :, :].repeat(1, 3, 1, 1)
 
     def backward_D_basic(self, netD, real, fake):
         """Calculate GAN loss for the discriminator
@@ -189,47 +199,43 @@ class UTOMModel(BaseModel):
         self.loss_G_B = self.criterionGAN(self.netD_B(self.fake_A), True)
         # Forward cycle loss || G_B(G_A(A)) - A||
         self.loss_cycle_A = self.criterionCycle(self.rec_A, self.real_A) * lambda_A
-        content_loss_value = self.content_loss()
+        self.loss_content = self.content_loss()
         # Backward cycle loss || G_A(G_B(B)) - B||
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
         # combined loss and calculate gradients
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B + content_loss_value
+        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B + self.loss_content
         # print('self.loss_idt_A -----> ',self.loss_idt_A, 'self.loss_idt_B -----> ',self.loss_idt_B, 'content_loss_value -----> ',content_loss_value)
         self.loss_G.backward()
 
     def content_loss(self):
-        # print('self.rec_A -----> ',self.rec_A.shape)
-        # print('self.real_A -----> ',self.real_A.shape)
-        # print('self.rec_B -----> ',self.rec_B.shape)
-        # print('self.real_B -----> ',self.real_B.shape)
-        # print('self.fake_A -----> ',self.fake_A.shape)
-        # print('self.fake_B -----> ',self.fake_B.shape)
+        """Structure-preserving loss in gradient domain.
 
-        L1_function = torch.nn.L1Loss()
-        real_A_mean = torch.mean(self.real_A,dim=1,keepdim=True)
-        real_B_mean = torch.mean(self.real_B,dim=1,keepdim=True)
-        fake_A_mean = torch.mean(self.fake_A,dim=1,keepdim=True)
-        fake_B_mean = torch.mean(self.fake_B,dim=1,keepdim=True)
+        Computes Sobel gradient magnitude from channel-mean inputs and outputs,
+        then matches them with L1 loss. Exponentially decays from 15× to near
+        zero over the course of training so that structure guidance dominates
+        early but cedes to the CycleGAN objectives later.
+        """
 
-        real_A_normal = (real_A_mean - (self.opt.threshold_A/127.5-1))*100
-        real_B_normal = (real_B_mean - (self.opt.threshold_B/127.5-1))*100
+        def grad_mag(x):
+            x_mean = torch.mean(x, dim=1, keepdim=True)
+            kx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                              dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
+            ky = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
+                              dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
+            gx = F.conv2d(x_mean, kx, padding=1)
+            gy = F.conv2d(x_mean, ky, padding=1)
+            return torch.sqrt(gx ** 2 + gy ** 2 + 1e-6)
 
-        fake_A_normal = (fake_A_mean - (self.opt.threshold_A/127.5-1))*100
-        fake_B_normal = (fake_B_mean - (self.opt.threshold_B/127.5-1))*100
+        grad_real_A = grad_mag(self.real_A)
+        grad_fake_B = grad_mag(self.fake_B)
+        grad_fake_A = grad_mag(self.fake_A)
+        grad_real_B = grad_mag(self.real_B)
 
-        real_A_sigmoid = torch.sigmoid(real_A_normal)
-        real_B_sigmoid = torch.sigmoid(real_B_normal)
+        content_loss_A = self.criterionCycle(grad_fake_B, grad_real_A)
+        content_loss_B = self.criterionCycle(grad_fake_A, grad_real_B)
 
-        fake_A_sigmoid = torch.sigmoid(fake_A_normal)
-        fake_B_sigmoid = torch.sigmoid(fake_B_normal)
-
-        content_loss_A = L1_function( real_A_sigmoid , fake_B_sigmoid )
-        content_loss_B = L1_function( fake_A_sigmoid , real_B_sigmoid )
-
-        content_loss_rate = 15 * np.exp(-(self.opt.counter / self.opt.data_size))
-        # content_loss_rate = 50
-        content_loss = (content_loss_A + content_loss_B)*content_loss_rate
-        return content_loss
+        rate = 15 * np.exp(-(self.opt.counter / self.opt.data_size))
+        return (content_loss_A + content_loss_B) * rate
 
 
     def optimize_parameters(self):

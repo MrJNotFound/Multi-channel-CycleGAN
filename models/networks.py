@@ -151,6 +151,10 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
     elif netG == "resnet_6blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == "dual_resnet_9blocks":
+        net = DualBranchResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+    elif netG == "dual_resnet_6blocks":
+        net = DualBranchResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
@@ -419,6 +423,142 @@ class ResnetBlock(nn.Module):
         """Forward function (with skip connections)"""
         out = x + self.conv_block(x)  # add skip connections
         return out
+
+
+class ChannelAttention(nn.Module):
+    """Squeeze-and-Excitation channel attention for cross-channel modulation.
+
+    Compresses spatial context via adaptive average pooling, then generates
+    per-channel gating weights through a bottleneck MLP.
+    """
+
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        return self.fc(x)
+
+
+class CrossChannelFusion(nn.Module):
+    """Fuses BF and AF features through cross-channel attention exchange.
+
+    BF features are modulated by channel attention derived from AF context,
+    and vice versa. The refined features are concatenated, projected, and
+    added back to the input via a residual connection.
+    """
+
+    def __init__(self, channels):
+        super().__init__()
+        self.ca_bf = ChannelAttention(channels)  # AF context -> BF channel weights
+        self.ca_af = ChannelAttention(channels)  # BF context -> AF channel weights
+        self.proj = nn.Sequential(
+            nn.Conv2d(channels * 2, channels, 1),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, feat_bf, feat_af):
+        bf_cross = feat_bf * self.ca_bf(feat_af)
+        af_cross = feat_af * self.ca_af(feat_bf)
+        fused = self.proj(torch.cat([bf_cross, af_cross], dim=1))
+        return fused + (feat_bf + feat_af)
+
+
+class DualBranchResnetGenerator(nn.Module):
+    """ResNet generator with separate encoder heads for BF and AF channels.
+
+    Architecture:
+        BF (1,H,W) -> Head_BF -> feat_BF ─┐
+                                           ├-> CCFusion -> Shared Backbone -> Output
+        AF (1,H,W) -> Head_AF -> feat_AF ─┘
+
+    Only supports input_nc == 2 (one channel per modality).
+    The shared backbone is identical to a standard ResnetGenerator downstream
+    of the first convolution.
+    """
+
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d,
+                 use_dropout=False, n_blocks=6, padding_type="reflect"):
+        assert input_nc == 2, f"DualBranchResnetGenerator requires input_nc=2, got {input_nc}"
+        super().__init__()
+
+        if isinstance(norm_layer, functools.partial):
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        # Separate encoder heads for each modality
+        self.head_bf = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(1, ngf, kernel_size=7, padding=0, bias=use_bias),
+            norm_layer(ngf),
+            nn.ReLU(True),
+        )
+        self.head_af = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(1, ngf, kernel_size=7, padding=0, bias=use_bias),
+            norm_layer(ngf),
+            nn.ReLU(True),
+        )
+
+        # Cross-channel feature fusion
+        self.fusion = CrossChannelFusion(ngf)
+
+        # Shared backbone (same as ResnetGenerator after the first conv)
+        # Downsampling
+        model = []
+        mult = 1
+        for i in range(2):
+            mult_prev = mult
+            mult = 2 ** (i + 1)
+            model += [
+                nn.Conv2d(ngf * mult_prev, ngf * mult, kernel_size=3, stride=2,
+                          padding=1, bias=use_bias),
+                norm_layer(ngf * mult),
+                nn.ReLU(True),
+            ]
+
+        # ResNet blocks
+        for i in range(n_blocks):
+            model += [
+                ResnetBlock(ngf * mult, padding_type=padding_type,
+                            norm_layer=norm_layer, use_dropout=use_dropout,
+                            use_bias=use_bias),
+            ]
+
+        # Upsampling
+        for i in range(2):
+            mult_prev = mult
+            mult = 2 ** (1 - i)
+            model += [
+                nn.ConvTranspose2d(ngf * mult_prev, ngf * mult, kernel_size=3,
+                                   stride=2, padding=1, output_padding=1,
+                                   bias=use_bias),
+                norm_layer(ngf * mult),
+                nn.ReLU(True),
+            ]
+
+        # Output
+        model += [nn.ReflectionPad2d(3)]
+        model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        model += [nn.Tanh()]
+
+        self.backbone = nn.Sequential(*model)
+
+    def forward(self, x):
+        bf = x[:, 0:1, :, :]
+        af = x[:, 1:2, :, :]
+        feat_bf = self.head_bf(bf)
+        feat_af = self.head_af(af)
+        fused = self.fusion(feat_bf, feat_af)
+        return self.backbone(fused)
 
 
 class UnetGenerator(nn.Module):
