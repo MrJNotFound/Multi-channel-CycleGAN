@@ -44,7 +44,12 @@ class TestModel(BaseModel):
         self.visual_names = ["real_bf", "real_af", "fake"] if self.dual_channel else ["real", "fake"]
         # specify the models you want to save to the disk. The training/test scripts will call <BaseModel.save_networks> and <BaseModel.load_networks>
         self.model_names = ["G" + opt.model_suffix]  # only generator is needed.
-        self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
+        netG_type = opt.netG
+        if opt.input_nc == 2 and netG_type == "resnet_9blocks":
+            netG_type = "dual_resnet_9blocks"
+        elif opt.input_nc == 2 and netG_type == "resnet_6blocks":
+            netG_type = "dual_resnet_6blocks"
+        self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
         # assigns the model to self.netG_[suffix] so that it can be loaded
         # please see <BaseModel.load_networks>

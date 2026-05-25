@@ -44,8 +44,8 @@ def _parse_xy_from_name(name: str):
 # ======================
 # 直接写死配置：你自己改这里
 # ======================
-patch_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024\mouse_kidney_Trans_HE_512\test_latest\images" # 染色后的patch文件夹（文件名需包含 patch_yxxxxx_xxxxxx）
-out_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\Trans_HE_kidney_20x_24_512_1024.png" # 输出大图
+patch_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024\mouse_kidney_AF_HE_256\test_latest\images_fake" # 染色后的patch文件夹（文件名需包含 patch_yxxxxx_xxxxxx）
+out_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\AF_HE_kidney_20x_24_256_1024.png" # 输出大图
 
 # 大图原始尺寸（推荐手动填原图尺寸，最稳；如果填 None，会用patch最大坐标推断）
 orig_w = None  # e.g. 8000

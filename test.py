@@ -46,17 +46,16 @@ if __name__ == "__main__":
 
     sys.argv = [
         "test.py",
-        "--dataroot", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_Trans\mosaic\kidney_24_512_1024",
-        "--name", "mouse_kidney_dual_BF_AF_HE",
+        "--dataroot", r"C:\Users\30927\Desktop\Multi-layer-CycleGAN\datasets\mouse_kidney_dual_BF_AF_HE_256\testA_AF",
+        "--name", "mouse_kidney_AF_HE_256",
         "--model", "test",
         "--model_suffix", "_A",
-        "--input_nc", "2",
+        "--input_nc", "3",
         "--output_nc", "3",
         "--no_dropout",
         "--num_test", "10000",
         "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024",
         "--preprocess", "none",
-        "--norm", "instance",
         "--epoch", "latest",
     ]
 

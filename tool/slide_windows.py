@@ -82,11 +82,11 @@ def sliding_window_patches(
 # ======================
 # 直接写死配置：你自己改这里
 # ======================
-img_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_Trans\WSI\Slide 24-Region 009.jpg"
-save_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_Trans\mosaic\kidney_24_512_1024"   # TODO: 改成输出目录
+img_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_DAPI\WSI_registed\kidney_24_DAPI.png"
+save_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_DAPI\mosaic\kidney_24_256_1024"
 
 # 图像采样比例
-scale = 1
+scale = 0.5
 
 # 窗口大小
 window_w = 1024

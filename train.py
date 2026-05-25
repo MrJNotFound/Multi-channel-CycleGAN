@@ -32,13 +32,9 @@ if __name__ == "__main__":
 
     sys.argv = [
         "train.py",
-        "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE",
-        "--name", "mouse_kidney_dual_BF_AF_HE_1",
-        "--model", "utom",
-        "--dataset_mode", "dual_channel",
-        "--input_nc", "2",
-        "--output_nc", "3",
-        "--lambda_identity", "0",
+        "--dataroot", "./datasets/mouse_kidney_AF_HE_UTOM_512",
+        "--name", "mouse_kidney_AF_HE_256",
+        "--model", "cycle_gan",
         "--batch_size", "4",
         "--n_epochs", "100",
         "--n_epochs_decay", "100",
