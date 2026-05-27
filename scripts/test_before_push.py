@@ -25,7 +25,7 @@ class TestBeforePush:
             subprocess.run(["bash", "./scripts/download_cyclegan_model.sh", "horse2zebra"], check=True)
         
         result = subprocess.run([
-            "python", "test.py", "--model", "test", "--dataroot", "./datasets/mini",
+            "python", "test_dual.py", "--model", "test", "--dataroot", "./datasets/mini",
             "--name", "horse2zebra_pretrained", "--no_dropout", "--num_test", "1"
         ], capture_output=True, text=True)
         
@@ -40,7 +40,7 @@ class TestBeforePush:
             subprocess.run(["bash", "./datasets/download_pix2pix_dataset.sh", "facades"], check=True)
         
         result = subprocess.run([
-            "python", "test.py", "--dataroot", "./datasets/facades/", "--direction", "BtoA",
+            "python", "test_dual.py", "--dataroot", "./datasets/facades/", "--direction", "BtoA",
             "--model", "pix2pix", "--name", "facades_label2photo_pretrained", "--num_test", "1"
         ], capture_output=True, text=True)
         
@@ -50,7 +50,7 @@ class TestBeforePush:
         """Test CycleGAN training and testing pipeline."""
         # Train
         train_result = subprocess.run([
-            "python", "train.py", "--model", "cycle_gan", "--name", "temp_cyclegan",
+            "python", "train_dual.py", "--model", "cycle_gan", "--name", "temp_cyclegan",
             "--dataroot", "./datasets/mini", "--n_epochs", "1", "--n_epochs_decay", "0",
             "--save_latest_freq", "10", "--print_freq", "1"
         ], capture_output=True, text=True)
@@ -59,7 +59,7 @@ class TestBeforePush:
         
         # Test
         test_result = subprocess.run([
-            "python", "test.py", "--model", "test", "--name", "temp_cyclegan",
+            "python", "test_dual.py", "--model", "test", "--name", "temp_cyclegan",
             "--dataroot", "./datasets/mini", "--num_test", "1", "--model_suffix", "_A", "--no_dropout"
         ], capture_output=True, text=True)
         
@@ -69,7 +69,7 @@ class TestBeforePush:
         """Test pix2pix training and testing pipeline."""
         # Train
         train_result = subprocess.run([
-            "python", "train.py", "--model", "pix2pix", "--name", "temp_pix2pix",
+            "python", "train_dual.py", "--model", "pix2pix", "--name", "temp_pix2pix",
             "--dataroot", "./datasets/mini_pix2pix", "--n_epochs", "1", "--n_epochs_decay", "5",
             "--save_latest_freq", "10"
         ], capture_output=True, text=True)
@@ -78,7 +78,7 @@ class TestBeforePush:
         
         # Test
         test_result = subprocess.run([
-            "python", "test.py", "--model", "pix2pix", "--name", "temp_pix2pix",
+            "python", "test_dual.py", "--model", "pix2pix", "--name", "temp_pix2pix",
             "--dataroot", "./datasets/mini_pix2pix", "--num_test", "1"
         ], capture_output=True, text=True)
         
@@ -88,7 +88,7 @@ class TestBeforePush:
         """Test template model training and testing."""
         # Train
         train_result = subprocess.run([
-            "python", "train.py", "--model", "template", "--name", "temp2",
+            "python", "train_dual.py", "--model", "template", "--name", "temp2",
             "--dataroot", "./datasets/mini_pix2pix", "--n_epochs", "1", "--n_epochs_decay", "0",
             "--save_latest_freq", "10"
         ], capture_output=True, text=True)
@@ -97,7 +97,7 @@ class TestBeforePush:
         
         # Test
         test_result = subprocess.run([
-            "python", "test.py", "--model", "template", "--name", "temp2",
+            "python", "test_dual.py", "--model", "template", "--name", "temp2",
             "--dataroot", "./datasets/mini_pix2pix", "--num_test", "1"
         ], capture_output=True, text=True)
         
@@ -107,7 +107,7 @@ class TestBeforePush:
         """Test colorization model training and testing."""
         # Train
         train_result = subprocess.run([
-            "python", "train.py", "--model", "colorization", "--name", "temp_color",
+            "python", "train_dual.py", "--model", "colorization", "--name", "temp_color",
             "--dataroot", "./datasets/mini_colorization", "--n_epochs", "1", "--n_epochs_decay", "0",
             "--save_latest_freq", "5"
         ], capture_output=True, text=True)
@@ -116,7 +116,7 @@ class TestBeforePush:
         
         # Test
         test_result = subprocess.run([
-            "python", "test.py", "--model", "colorization", "--name", "temp_color",
+            "python", "test_dual.py", "--model", "colorization", "--name", "temp_color",
             "--dataroot", "./datasets/mini_colorization", "--num_test", "1"
         ], capture_output=True, text=True)
         

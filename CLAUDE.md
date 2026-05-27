@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # UTOM model (dual-channel BF+AF to H&E, the primary use case)
-python train.py \
+python train_dual.py \
     --dataroot ./datasets/mouse_kidney_dual_BF_AF_HE \
     --name experiment_name \
     --model utom \
@@ -22,7 +22,7 @@ python train.py \
     --crop_size 256
 
 # Standard CycleGAN (single channel or RGB)
-python train.py --dataroot ./datasets/maps --name maps_cyclegan --model cycle_gan
+python train_dual.py --dataroot ./datasets/maps --name maps_cyclegan --model cycle_gan
 ```
 
 Training checkpoints and logs are saved to `./checkpoints/<name>/`. Loss curves go to `loss_log.txt`, options to `train_opt.txt`.
@@ -30,7 +30,7 @@ Training checkpoints and logs are saved to `./checkpoints/<name>/`. Loss curves 
 ### Testing / Inference
 
 ```bash
-python test.py \
+python test_dual.py \
     --dataroot <test_data_path> \
     --name experiment_name \
     --model utom \

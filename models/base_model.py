@@ -167,7 +167,7 @@ class BaseModel(ABC):
         print(f"learning rate {old_lr:.7f} -> {lr:.7f}")
 
     def get_current_visuals(self):
-        """Return visualization images. train.py will display these images with visdom, and save the images to a HTML"""
+        """Return visualization images. train_dual.py will display these images with visdom, and save the images to a HTML"""
         visual_ret = OrderedDict()
         for name in self.visual_names:
             if isinstance(name, str):
@@ -175,7 +175,7 @@ class BaseModel(ABC):
         return visual_ret
 
     def get_current_losses(self):
-        """Return traning losses / errors. train.py will print out these errors on console, and save them to a file"""
+        """Return traning losses / errors. train_dual.py will print out these errors on console, and save them to a file"""
         errors_ret = OrderedDict()
         for name in self.loss_names:
             if isinstance(name, str):

@@ -51,10 +51,16 @@ class DualChannelDataset(BaseDataset):
 
         self.A_size = len(self.A_pairs)
 
-        # Domain B: H&E images (unaligned for CycleGAN)
+        # Domain B: H&E images (optional — may not exist during test/inference)
         self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")
-        self.B_paths = sorted(make_dataset(self.dir_B, opt.max_dataset_size))
-        self.B_size = len(self.B_paths)
+        if os.path.isdir(self.dir_B):
+            self.B_paths = sorted(make_dataset(self.dir_B, opt.max_dataset_size))
+            self.has_B = True
+        else:
+            print(f"Warning: {self.dir_B} not found — domain B will be dummy tensors (inference-only mode).")
+            self.B_paths = []
+            self.has_B = False
+        self.B_size = len(self.B_paths) if self.has_B else 0
         btoA = self.opt.direction == "BtoA"
         output_nc = self.opt.input_nc if btoA else self.opt.output_nc
         self.transform_B = get_transform(self.opt, grayscale=(output_nc == 1))
@@ -74,17 +80,20 @@ class DualChannelDataset(BaseDataset):
         # Stack as 2-channel tensor
         A = torch.cat([A_bf, A_af], dim=0)  # (2, H, W)
 
-        # Domain B: random index for unaligned training
-        if self.opt.serial_batches:
-            index_B = index % self.B_size
+        # Domain B: random index for unaligned training (or dummy during inference)
+        if self.has_B:
+            if self.opt.serial_batches:
+                index_B = index % self.B_size
+            else:
+                index_B = random.randint(0, self.B_size - 1)
+            B_path = self.B_paths[index_B]
+            img_b = Image.open(B_path).convert("RGB")
+            B = self.transform_B(img_b)
         else:
-            index_B = random.randint(0, self.B_size - 1)
-        B_path = self.B_paths[index_B]
-
-        img_b = Image.open(B_path).convert("RGB")
-        B = self.transform_B(img_b)
+            B_path = A_bf_path  # placeholder
+            B = torch.zeros(3, A.shape[1], A.shape[2])
 
         return {"A": A, "B": B, "A_paths": A_bf_path, "B_paths": B_path}
 
     def __len__(self):
-        return max(self.A_size, self.B_size) if hasattr(self, 'B_size') else self.A_size
+        return max(self.A_size, self.B_size)

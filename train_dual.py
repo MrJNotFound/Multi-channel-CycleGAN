@@ -10,9 +10,9 @@ The script supports continue/resume training. Use '--continue_train' to resume y
 
 Example:
     Train a CycleGAN model:
-        python train.py --dataroot ./datasets/maps --name maps_cyclegan --model cycle_gan
+        python train_dual.py --dataroot ./datasets/maps --name maps_cyclegan --model cycle_gan
     Train a pix2pix model:
-        python train.py --dataroot ./datasets/facades --name facades_pix2pix --model pix2pix --direction BtoA
+        python train_dual.py --dataroot ./datasets/facades --name facades_pix2pix --model pix2pix --direction BtoA
 
 See options/base_options.py and options/train_options.py for more training options.
 See training and test tips at: https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/docs/tips.md
@@ -31,15 +31,19 @@ import sys
 if __name__ == "__main__":
 
     sys.argv = [
-        "train.py",
-        "--dataroot", "./datasets/mouse_kidney_AF_HE_UTOM_512",
-        "--name", "mouse_kidney_AF_HE_256",
-        "--model", "cycle_gan",
+        "train_dual.py",
+        "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
+        "--name", "mouse_kidney_dual_UTOM_256",
+        "--model", "utom",
+        "--dataset_mode", "dual_channel",
+        "--input_nc", "2",
+        "--output_nc", "3",
+        "--lambda_identity", "0",
         "--batch_size", "4",
         "--n_epochs", "100",
         "--n_epochs_decay", "100",
         "--load_size", "286",
-        "--crop_size", "256"
+        "--crop_size", "256",
     ]
 
     opt = TrainOptions().parse()  # get training options

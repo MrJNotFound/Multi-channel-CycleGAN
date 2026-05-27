@@ -1,6 +1,6 @@
 """General-purpose test script for image-to-image translation.
 
-Once you have trained your model with train.py, you can use this script to test the model.
+Once you have trained your model with train_dual.py, you can use this script to test the model.
 It will load a saved model from '--checkpoints_dir' and save the results to '--results_dir'.
 
 It first creates model and dataset given the option. It will hard-code some parameters.
@@ -8,10 +8,10 @@ It then runs inference for '--num_test' images and save results to an HTML file.
 
 Example (You need to train models first or download pre-trained models from our website):
     Test a CycleGAN model (both sides):
-        python test.py --dataroot ./datasets/maps --name maps_cyclegan --model cycle_gan
+        python test_dual.py --dataroot ./datasets/maps --name maps_cyclegan --model cycle_gan
 
     Test a CycleGAN model (one side only):
-        python test.py --dataroot datasets/horse2zebra/testA --name horse2zebra_pretrained --model test --no_dropout
+        python test_dual.py --dataroot datasets/horse2zebra/testA --name horse2zebra_pretrained --model test --no_dropout
 
     The option '--model test' is used for generating CycleGAN results only for one side.
     This option will automatically set '--dataset_mode single', which only loads the images from one set.
@@ -20,7 +20,7 @@ Example (You need to train models first or download pre-trained models from our 
     Use '--results_dir <directory_path_to_save_result>' to specify the results directory.
 
     Test a pix2pix model:
-        python test.py --dataroot ./datasets/facades --name facades_pix2pix --model pix2pix --direction BtoA
+        python test_dual.py --dataroot ./datasets/facades --name facades_pix2pix --model pix2pix --direction BtoA
 
 See options/base_options.py and options/test_options.py for more test options.
 See training and test tips at: https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/docs/tips.md
@@ -45,17 +45,18 @@ except ImportError:
 if __name__ == "__main__":
 
     sys.argv = [
-        "test.py",
-        "--dataroot", r"C:\Users\30927\Desktop\Multi-layer-CycleGAN\datasets\mouse_kidney_dual_BF_AF_HE_256\testA_AF",
-        "--name", "mouse_kidney_AF_HE_256",
+        "test_dual.py",
+        "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
+        "--name", "mouse_kidney_dual_UTOM_256",
         "--model", "test",
         "--model_suffix", "_A",
-        "--input_nc", "3",
+        "--dataset_mode", "dual_channel",
+        "--input_nc", "2",
         "--output_nc", "3",
         "--no_dropout",
-        "--num_test", "10000",
-        "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024",
         "--preprocess", "none",
+        "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024",
+        "--num_test", "10000",
         "--epoch", "latest",
     ]
 

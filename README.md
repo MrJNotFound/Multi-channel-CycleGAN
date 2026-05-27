@@ -73,7 +73,7 @@ dataroot/
 
 ```bash
 # UTOM 模型（推荐用于双通道虚拟染色）
-python train.py \
+python train_dual.py \
     --dataroot ./datasets/mouse_kidney_dual_BF_AF_HE \
     --name mouse_kidney_dual_BF_AF_HE \
     --model utom \
@@ -87,7 +87,7 @@ python train.py \
     --crop_size 256
 
 # 标准 CycleGAN（单通道 / RGB）
-python train.py \
+python train_dual.py \
     --dataroot ./datasets/maps \
     --name maps_cyclegan \
     --model cycle_gan \
@@ -98,7 +98,7 @@ python train.py \
 ### 测试
 
 ```bash
-python test.py \
+python test_dual.py \
     --dataroot <test_data_path> \
     --name mouse_kidney_dual_BF_AF_HE \
     --model utom \
