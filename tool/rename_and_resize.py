@@ -63,9 +63,9 @@ def convert_and_resize_images(input_dir, output_dir, scale=1.0, save_grayscale=F
 
 # 使用示例
 if __name__ == "__main__":
-    input_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_BF\WSI"
-    output_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_BF\WSI_gray"
-    scale = 1  # 例如0.5表示缩小一半，1不缩放，2放大一倍
+    input_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new"
+    output_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new_lowres"
+    scale = 0.1  # 例如0.5表示缩小一半，1不缩放，2放大一倍
     save_grayscale = True # True=保存为灰度, False=彩色
     rename = False
     convert_and_resize_images(input_dir, output_dir, scale, save_grayscale, rename)

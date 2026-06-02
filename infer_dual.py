@@ -45,9 +45,9 @@ except ImportError:
 if __name__ == "__main__":
 
     sys.argv = [
-        "test_dual.py",
+        "infer_dual.py",
         "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
-        "--name", "mouse_kidney_dual_UTOM_256",
+        "--name", "mouse_kidney_dual_utom_256_re2",
         "--model", "test",
         "--model_suffix", "_A",
         "--dataset_mode", "dual_channel",

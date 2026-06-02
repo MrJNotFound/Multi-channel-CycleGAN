@@ -25,16 +25,17 @@ except ImportError:
 if __name__ == "__main__":
 
     sys.argv = [
-        "test_single.py",
-        "--dataroot", "./datasets/mouse_kidney_AF_HE_256/testA",
-        "--name", "mouse_kidney_AF_HE_256",
+        "infer_single.py",
+        "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256/testA_BF",
+        "--name", "mouse_kidney_Trans_HE_256",
         "--model", "test",
         "--model_suffix", "_A",
-        "--input_nc", "1",
+        "--input_nc", "3",
         "--output_nc", "3",
         "--no_dropout",
         "--preprocess", "none",
-        "--num_test", "50",
+        "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024",
+        "--num_test", "10000",
         "--epoch", "latest",
     ]
 

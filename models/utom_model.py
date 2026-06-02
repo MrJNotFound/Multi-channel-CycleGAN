@@ -52,6 +52,9 @@ class UTOMModel(BaseModel):
                 default=0.5,
                 help="use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1",
             )
+            parser.add_argument("--lambda_low_freq", type=float, default=0.5,
+                                help="weight for low-frequency intensity term in content loss "
+                                     "(prevents foreground/background inversion in early training)")
 
         return parser
 
@@ -114,6 +117,7 @@ class UTOMModel(BaseModel):
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            self.lambda_low_freq = opt.lambda_low_freq
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -213,12 +217,14 @@ class UTOMModel(BaseModel):
         self.loss_G.backward()
 
     def content_loss(self):
-        """Structure-preserving loss in gradient domain.
+        """Structure-preserving loss in gradient domain + low-frequency anchor.
 
-        Computes Sobel gradient magnitude from channel-mean inputs and outputs,
-        then matches them with L1 loss. Exponentially decays from 15× to near
-        zero over the course of training so that structure guidance dominates
-        early but cedes to the CycleGAN objectives later.
+        Sobel gradient magnitude (edge-level) ensures texture/structural fidelity.
+        Gaussian-blurred L1 (low-frequency) prevents foreground/background
+        inversion by anchoring broad intensity distributions — critical in early
+        training when the generator has no absolute luminance reference.
+
+        Both terms decay exponentially from 25× to near zero over training.
         """
 
         def grad_mag(x):
@@ -231,16 +237,33 @@ class UTOMModel(BaseModel):
             gy = F.conv2d(x_mean, ky, padding=1)
             return torch.sqrt(gx ** 2 + gy ** 2 + 1e-6)
 
+        def low_freq(x):
+            x_mean = torch.mean(x, dim=1, keepdim=True)
+            radius = 10
+            sigma = 5.0
+            coords = torch.arange(2 * radius + 1, dtype=torch.float32, device=x.device) - radius
+            g1d = torch.exp(-0.5 * (coords / sigma) ** 2)
+            g1d = g1d / g1d.sum()
+            kernel = (g1d[:, None] * g1d[None, :]).view(1, 1, 2 * radius + 1, 2 * radius + 1)
+            return F.conv2d(x_mean, kernel, padding=radius)
+
         grad_real_A = grad_mag(self.real_A)
         grad_fake_B = grad_mag(self.fake_B)
         grad_fake_A = grad_mag(self.fake_A)
         grad_real_B = grad_mag(self.real_B)
 
-        content_loss_A = self.criterionCycle(grad_fake_B, grad_real_A)
-        content_loss_B = self.criterionCycle(grad_fake_A, grad_real_B)
+        low_real_A = low_freq(self.real_A)
+        low_fake_B = low_freq(self.fake_B)
+        low_fake_A = low_freq(self.fake_A)
+        low_real_B = low_freq(self.real_B)
+
+        grad_loss_A = self.criterionCycle(grad_fake_B, grad_real_A)
+        grad_loss_B = self.criterionCycle(grad_fake_A, grad_real_B)
+        low_loss_A = self.criterionCycle(low_fake_B, low_real_A)
+        low_loss_B = self.criterionCycle(low_fake_A, low_real_B)
 
         rate = 15 * np.exp(-(self.opt.counter / self.opt.data_size))
-        return (content_loss_A + content_loss_B) * rate
+        return rate * (grad_loss_A + grad_loss_B + self.lambda_low_freq * (low_loss_A + low_loss_B))
 
 
     def optimize_parameters(self):

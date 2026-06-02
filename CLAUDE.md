@@ -30,15 +30,11 @@ Training checkpoints and logs are saved to `./checkpoints/<name>/`. Loss curves 
 ### Testing / Inference
 
 ```bash
-python test_dual.py \
-    --dataroot <test_data_path> \
-    --name experiment_name \
-    --model utom \
-    --input_nc 2 \
-    --output_nc 3 \
-    --no_dropout \
-    --preprocess none \
-    --epoch latest
+# Dual-channel inference
+python infer_dual.py
+
+# Single-channel / RGB inference
+python infer_single.py
 ```
 
 Results are saved to `./results/<name>/test_latest/`. Use `--num_test` to limit images, `--results_dir` to redirect output.
