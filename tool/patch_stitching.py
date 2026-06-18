@@ -1,5 +1,7 @@
 import re
 from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
 
 import cv2
 import numpy as np
@@ -32,7 +34,7 @@ def _gaussian2d(h: int, w: int, sigma_scale: float = 0.125) -> np.ndarray:
 
 
 def _parse_xy_from_name(name: str):
-    """从文件名解析 y/x: patch_y000000_x000000.png"""
+    """从文件名解析 y/x: ...patch_y000000_x000000.png"""
     m = re.search(r"patch_y(\d+)_x(\d+)", name)
     if not m:
         return None
@@ -41,141 +43,195 @@ def _parse_xy_from_name(name: str):
     return x, y
 
 
-# ======================
-# 直接写死配置：你自己改这里
-# ======================
-patch_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024\mouse_kidney_dual_256\test_latest\images_fake" # 染色后的patch文件夹（文件名需包含 patch_yxxxxx_xxxxxx）
-out_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new\dual_kidney_20x_24_256_1024.png" # 输出大图
+def _extract_group_prefix(name: str) -> str:
+    """提取 patch 文件名中 `patch_y` 之前的前缀作为分组标识。
+    例如: 'ROI_01_patch_y000000_x000000.png' → 'ROI_01'
+          'patch_y000000_x000000.png' → '' (默认组)
+    """
+    m = re.match(r"^(.*?)_?patch_y\d+_x\d+", name)
+    if m and m.group(1):
+        return m.group(1)
+    return ""
 
-# 大图原始尺寸（推荐手动填原图尺寸，最稳；如果填 None，会用patch最大坐标推断）
-orig_w = None  # e.g. 8000
-orig_h = None  # e.g. 6000
-
-# 融合权重窗类型：'hann' 或 'gaussian'
-weight_mode = "hann"
-
-# 如果你的patch边缘是用白色padding出来的，且不希望padding区域参与融合，可以打开：
-# 会把“接近pad_color”的像素权重降低到0
-ignore_padding = False
-pad_color_bgr = (255, 255, 255)
-pad_tol = 3  # 允许的颜色误差
-
-# 输出保存为BGR PNG
-
-
-patch_root = Path(patch_dir)
-if not patch_root.exists():
-    raise FileNotFoundError(f"patch_dir not found: {patch_root}")
-
-# 收集patch
-img_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-items = []  # (x, y, path)
-for p in patch_root.rglob("*"):
-    if not p.is_file() or p.suffix.lower() not in img_exts:
-        continue
-    xy = _parse_xy_from_name(p.name)
-    if xy is None:
-        continue
-    x, y = xy
-    items.append((x, y, p))
-
-if not items:
-    raise RuntimeError("No patch images found with name pattern patch_yXXXXXX_xXXXXXX")
-
-# 按坐标排序
-items.sort(key=lambda t: (t[1], t[0]))
-
-# 读第一张确定patch大小
-first = cv2.imread(str(items[0][2]), cv2.IMREAD_COLOR)
-if first is None:
-    raise RuntimeError(f"Failed to read: {items[0][2]}")
-ph, pw = first.shape[:2]
-
-# 推断 stride：取最常见的相邻差值（比直接填更不容易出错）
-xs_sorted = sorted({x for x, _, _ in items})
-ys_sorted = sorted({y for _, y, _ in items})
 
 def _most_common_positive_diff(vals):
     diffs = [b - a for a, b in zip(vals[:-1], vals[1:]) if (b - a) > 0]
     if not diffs:
         return None
-    # 简单统计众数
     uniq, cnt = np.unique(np.array(diffs, dtype=np.int32), return_counts=True)
     return int(uniq[np.argmax(cnt)])
 
-sx = _most_common_positive_diff(xs_sorted)
-sy = _most_common_positive_diff(ys_sorted)
-if sx is None:
-    sx = pw
-if sy is None:
-    sy = ph
 
-# 推断大图尺寸
-max_x = max(x for x, _, _ in items)
-max_y = max(y for _, y, _ in items)
-W = orig_w if orig_w is not None else (max_x + pw)
-H = orig_h if orig_h is not None else (max_y + ph)
+def stitch_group(items, orig_w, orig_h, weight_mode, ignore_padding, pad_color_bgr, pad_tol):
+    """对一组 patch 进行拼接，返回拼接后的大图。"""
+    # 读第一张确定patch大小
+    first = cv2.imread(str(items[0][2]), cv2.IMREAD_COLOR)
+    if first is None:
+        raise RuntimeError(f"Failed to read: {items[0][2]}")
+    ph, pw = first.shape[:2]
 
-# 累积器
-acc = np.zeros((H, W, 3), dtype=np.float32)
-wsum = np.zeros((H, W, 1), dtype=np.float32)
+    xs_sorted = sorted({x for x, _, _ in items})
+    ys_sorted = sorted({y for _, y, _ in items})
+    sx = _most_common_positive_diff(xs_sorted) or pw
+    sy = _most_common_positive_diff(ys_sorted) or ph
 
-# 权重窗
-if weight_mode.lower() == "hann":
-    w_patch = _hann2d(ph, pw)
-elif weight_mode.lower() == "gaussian":
-    w_patch = _gaussian2d(ph, pw)
-else:
-    raise ValueError("weight_mode must be 'hann' or 'gaussian'")
+    max_x = max(x for x, _, _ in items)
+    max_y = max(y for _, y, _ in items)
+    W = orig_w if orig_w is not None else (max_x + pw)
+    H = orig_h if orig_h is not None else (max_y + ph)
 
-w_patch = w_patch[..., None]  # (ph,pw,1)
+    acc = np.zeros((H, W, 3), dtype=np.float32)
+    wsum = np.zeros((H, W, 1), dtype=np.float32)
 
-pad_color = np.array(pad_color_bgr, dtype=np.uint8).reshape(1, 1, 3)
+    if weight_mode.lower() == "hann":
+        w_patch = _hann2d(ph, pw)
+    elif weight_mode.lower() == "gaussian":
+        w_patch = _gaussian2d(ph, pw)
+    else:
+        raise ValueError("weight_mode must be 'hann' or 'gaussian'")
+    w_patch = w_patch[..., None]
 
-# 拼接
-for x, y, p in items:
-    img = cv2.imread(str(p), cv2.IMREAD_COLOR)
-    if img is None:
-        raise RuntimeError(f"Failed to read: {p}")
-    if img.shape[0] != ph or img.shape[1] != pw:
-        raise RuntimeError(f"Patch size mismatch: {p} got {img.shape[1]}x{img.shape[0]}, expect {pw}x{ph}")
+    pad_color = np.array(pad_color_bgr, dtype=np.uint8).reshape(1, 1, 3)
 
-    x0, y0 = x, y
-    x1, y1 = min(W, x + pw), min(H, y + ph)
-    if x0 >= W or y0 >= H:
-        continue
+    for x, y, p in items:
+        img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError(f"Failed to read: {p}")
+        if img.shape[0] != ph or img.shape[1] != pw:
+            raise RuntimeError(f"Patch size mismatch: {p} got {img.shape[1]}x{img.shape[0]}, expect {pw}x{ph}")
 
-    # 对于最后一行/列可能越界（如果你用pad切的，理论上不会越界；这里做个保护）
-    roi_w = x1 - x0
-    roi_h = y1 - y0
+        x0, y0 = x, y
+        x1, y1 = min(W, x + pw), min(H, y + ph)
+        if x0 >= W or y0 >= H:
+            continue
+        roi_w = x1 - x0
+        roi_h = y1 - y0
 
-    img_roi = img[:roi_h, :roi_w].astype(np.float32)
-    w_roi = w_patch[:roi_h, :roi_w]
+        img_roi = img[:roi_h, :roi_w].astype(np.float32)
+        w_roi = w_patch[:roi_h, :roi_w]
 
-    if ignore_padding:
-        # 找到接近 pad_color 的区域，把权重置0
-        diff = np.max(np.abs(img[:roi_h, :roi_w].astype(np.int16) - pad_color.astype(np.int16)), axis=2)
-        mask = (diff <= pad_tol).astype(np.float32)  # 1=padding
-        w_roi = w_roi * (1.0 - mask[..., None])
+        if ignore_padding:
+            diff = np.max(np.abs(img[:roi_h, :roi_w].astype(np.int16) - pad_color.astype(np.int16)), axis=2)
+            mask = (diff <= pad_tol).astype(np.float32)
+            w_roi = w_roi * (1.0 - mask[..., None])
 
-    acc[y0:y1, x0:x1] += img_roi * w_roi
-    wsum[y0:y1, x0:x1] += w_roi
+        acc[y0:y1, x0:x1] += img_roi * w_roi
+        wsum[y0:y1, x0:x1] += w_roi
 
-# 归一化
-wsum_safe = np.maximum(wsum, 1e-6)
-out = acc / wsum_safe
-out = np.clip(out, 0, 255).astype(np.uint8)
+    wsum_safe = np.maximum(wsum, 1e-6)
+    out = acc / wsum_safe
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    return out, pw, ph, sx, sy, W, H
 
-out_path_p = Path(out_path)
-out_path_p.parent.mkdir(parents=True, exist_ok=True)
-ok = cv2.imwrite(str(out_path_p), out)
-if not ok:
-    raise RuntimeError(f"Failed to save: {out_path_p}")
 
-print("Done.")
-print(f"Patch dir: {patch_root}")
-print(f"Output: {out_path_p}")
-print(f"Patch size: {pw}x{ph}")
-print(f"Inferred stride: sx={sx}, sy={sy}")
-print(f"Canvas size: W={W}, H={H}")
-print(f"Num patches: {len(items)}")
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
+
+    # 1. 选择 patch 文件夹
+    patch_dir = filedialog.askdirectory(title="选择 patch 文件夹")
+    if not patch_dir:
+        print("未选择文件夹，退出。")
+        root.destroy()
+        exit()
+
+    # 2. 选择输出文件夹
+    out_dir = filedialog.askdirectory(title="选择输出文件夹")
+    if not out_dir:
+        print("未选择输出文件夹，退出。")
+        root.destroy()
+        exit()
+
+    # 3. 参数设置
+    wmode_var = tk.StringVar(value="hann")
+    pad_var = tk.BooleanVar(value=False)
+    ow_var = tk.StringVar(value="")
+    oh_var = tk.StringVar(value="")
+
+    param_win = tk.Toplevel(root)
+    param_win.title("拼接参数")
+    param_win.resizable(False, False)
+    r = 0
+
+    tk.Label(param_win, text="融合权重窗:", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=(15, 3))
+    tk.OptionMenu(param_win, wmode_var, "hann", "gaussian").grid(row=r, column=1, sticky="w")
+    r += 1
+    tk.Checkbutton(param_win, text="忽略白色 padding 区域", variable=pad_var, font=("", 11)).grid(row=r, column=0, columnspan=2, sticky="w", padx=15, pady=3)
+    r += 1
+    tk.Label(param_win, text="原始宽度 (留空=自动推断):", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=ow_var, width=8).grid(row=r, column=1, sticky="w")
+    r += 1
+    tk.Label(param_win, text="原始高度 (留空=自动推断):", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=oh_var, width=8).grid(row=r, column=1, sticky="w")
+    r += 1
+
+    tk.Button(param_win, text="开始拼接", command=param_win.destroy, width=12).grid(row=r, column=0, columnspan=2, pady=(15, 15))
+
+    param_win.grab_set()
+    root.wait_window(param_win)
+    root.destroy()
+
+    weight_mode = wmode_var.get()
+    ignore_padding = pad_var.get()
+    try:
+        orig_w = int(ow_var.get()) if ow_var.get().strip() else None
+    except ValueError:
+        orig_w = None
+    try:
+        orig_h = int(oh_var.get()) if oh_var.get().strip() else None
+    except ValueError:
+        orig_h = None
+
+    # 收集 patch
+    patch_root = Path(patch_dir)
+    img_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+    all_items = []
+    for p in patch_root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in img_exts:
+            continue
+        xy = _parse_xy_from_name(p.name)
+        if xy is None:
+            continue
+        x, y = xy
+        prefix = _extract_group_prefix(p.name)
+        all_items.append((prefix, x, y, p))
+
+    if not all_items:
+        raise RuntimeError("No patch images found with name pattern patch_yXXXXXX_xXXXXXX")
+
+    # 按前缀分组
+    groups = {}
+    for prefix, x, y, p in all_items:
+        groups.setdefault(prefix, []).append((x, y, p))
+
+    print(f"Patch 目录: {patch_root}")
+    print(f"输出目录: {out_dir}")
+    print(f"识别到 {len(groups)} 组图像:")
+    for prefix, items in sorted(groups.items()):
+        label = prefix if prefix else "(无前缀)"
+        print(f"  [{label}] {len(items)} patches")
+    print()
+
+    # 逐组拼接
+    total = 0
+    for prefix, items in sorted(groups.items()):
+        items.sort(key=lambda t: (t[1], t[0]))  # 按 y, x 排序
+        label = prefix if prefix else "stitched"
+
+        try:
+            out, pw, ph, sx, sy, W, H = stitch_group(
+                items, orig_w, orig_h, weight_mode, ignore_padding,
+                (255, 255, 255), 3
+            )
+            out_name = f"{label}.png"
+            out_path = str(Path(out_dir) / out_name)
+            ok = cv2.imwrite(out_path, out)
+            if not ok:
+                print(f"  保存失败: {out_name}")
+                continue
+            print(f"[{label}] Done. Size={W}x{H}, stride=({sx},{sy}), patches={len(items)} -> {out_name}")
+            total += 1
+        except Exception as e:
+            print(f"[{label}] 拼接失败: {e}")
+
+    print(f"\n完成！共拼接 {total}/{len(groups)} 组。")

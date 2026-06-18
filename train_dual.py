@@ -30,21 +30,23 @@ import sys
 
 if __name__ == "__main__":
 
-    sys.argv = [
-        "train_dual.py",
-        "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
-        "--name", "mouse_kidney_dual_utom_256_re3",
-        "--model", "utom",
-        "--dataset_mode", "dual_channel",
-        "--input_nc", "2",
-        "--output_nc", "3",
-        "--lambda_identity", "0",
-        "--batch_size", "8",
-        "--n_epochs", "100",
-        "--n_epochs_decay", "100",
-        "--load_size", "286",
-        "--crop_size", "256",
-    ]
+    if len(sys.argv) == 1:
+        sys.argv = [
+            "train_dual.py",
+            "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
+            "--name", "mouse_kidney_dual_utom_256_re4",
+            "--model", "utom",
+            "--dataset_mode", "dual_channel",
+            "--input_nc", "2",
+            "--output_nc", "3",
+            "--lambda_identity", "0",
+            "--batch_size", "8",
+            "--n_epochs", "100",
+            "--n_epochs_decay", "100",
+            "--load_size", "286",
+            "--crop_size", "256",
+            "--lambda_low_freq", "0.5",
+        ]
 
     opt = TrainOptions().parse()  # get training options
     opt.device = init_ddp()

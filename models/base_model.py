@@ -107,7 +107,7 @@ class BaseModel(ABC):
                     # patch InstanceNorm checkpoints
                     for key in list(state_dict.keys()):
                         self.__patch_instance_norm_state_dict(state_dict, net, key.split("."))
-                    net.load_state_dict(state_dict)
+                    net.load_state_dict(state_dict, strict=False)
 
                 # Move network to device
                 net.to(self.device)
@@ -216,7 +216,14 @@ class BaseModel(ABC):
             if module.__class__.__name__.startswith("InstanceNorm") and (key == "num_batches_tracked"):
                 state_dict.pop(".".join(keys))
         else:
-            self.__patch_instance_norm_state_dict(state_dict, getattr(module, key), keys, i + 1)
+            try:
+                submodule = getattr(module, key)
+            except AttributeError:
+                # key from old checkpoint doesn't match current model structure;
+                # remove it so strict=False can handle the rest
+                state_dict.pop(".".join(keys), None)
+                return
+            self.__patch_instance_norm_state_dict(state_dict, submodule, keys, i + 1)
 
     def load_networks(self, epoch):
         """Load all networks from the disk for DDP."""
@@ -239,7 +246,7 @@ class BaseModel(ABC):
                 # patch InstanceNorm checkpoints
                 for key in list(state_dict.keys()):
                     self.__patch_instance_norm_state_dict(state_dict, net, key.split("."))
-                net.load_state_dict(state_dict)
+                net.load_state_dict(state_dict, strict=False)
 
         # Add a barrier to sync all processes before continuing
         if dist.is_initialized():

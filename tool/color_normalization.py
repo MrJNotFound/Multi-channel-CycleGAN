@@ -1,25 +1,68 @@
 import os
 import cv2
 import numpy as np
+import tkinter as tk
+from tkinter import filedialog
+
 
 def main():
-    # 修改为你的两张染色图片路径
-    ref_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_HE\WSI\Slide 23-Region 008.jpg"  # 第 1 张：参考
-    tgt_path = r"C:\Users\30927\Desktop\111.png"     # 第 2 张：待归一化
+    # 隐藏主窗口，只显示对话框
+    root = tk.Tk()
+    root.withdraw()
 
-    out_path = r"C:\Users\30927\Desktop\1111.png"
+    # 1. 选择参考图像
+    ref_path = filedialog.askopenfilename(
+        title="选择参考图像（颜色归一化目标）",
+        filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                   ("所有文件", "*.*")],
+    )
+    if not ref_path:
+        print("未选择参考图像，退出。")
+        return
 
+    # 2. 选择待归一化图像（可多选）
+    tgt_paths = filedialog.askopenfilenames(
+        title="选择待归一化图像（可多选）",
+        filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                   ("所有文件", "*.*")],
+    )
+    if not tgt_paths:
+        print("未选择待归一化图像，退出。")
+        return
+
+    # 3. 选择输出文件夹
+    out_dir = filedialog.askdirectory(title="选择输出文件夹")
+    if not out_dir:
+        print("未选择输出文件夹，退出。")
+        return
+
+    root.destroy()
+
+    # 读取参考图像
     ref = _read_bgr(ref_path)
-    tgt = _read_bgr(tgt_path)
 
-    norm = reinhard_normalize_bgr(ref, tgt)
+    # 批量归一化并保存
+    count = 0
+    for tgt_path in tgt_paths:
+        try:
+            tgt = _read_bgr(tgt_path)
+            norm = reinhard_normalize_bgr(ref, tgt)
 
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    ok = cv2.imwrite(out_path, norm)
-    if not ok:
-        raise RuntimeError(f"保存失败: {out_path}")
+            base_name = os.path.splitext(os.path.basename(tgt_path))[0]
+            out_path = os.path.join(out_dir, f"{base_name}_normalized.png")
 
-    print(f"Saved: {out_path}")
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            ok = cv2.imwrite(out_path, norm)
+            if not ok:
+                print(f"保存失败: {out_path}")
+                continue
+
+            print(f"[{count + 1}/{len(tgt_paths)}] Saved: {out_path}")
+            count += 1
+        except Exception as e:
+            print(f"处理失败 [{tgt_path}]: {e}")
+
+    print(f"完成！共处理 {count}/{len(tgt_paths)} 张图像。")
 
 def _mean_std(img_lab: np.ndarray, mask: np.ndarray | None = None):
     """计算每个通道的均值与标准差（可选 mask）。"""

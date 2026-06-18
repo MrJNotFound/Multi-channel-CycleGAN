@@ -1,6 +1,8 @@
 import os
 import math
 import cv2
+import tkinter as tk
+from tkinter import filedialog
 import numpy as np
 
 
@@ -79,64 +81,119 @@ def sliding_window_patches(
     return out, xs, ys, (stride_x, stride_y)
 
 
-# ======================
-# 直接写死配置：你自己改这里
-# ======================
-img_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_DAPI\WSI_registed\kidney_24_DAPI.png"
-save_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_DAPI\mosaic\kidney_24_256_1024"
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
 
-# 图像采样比例
-scale = 0.5
+    # 1. 选择输入图像（可多选）
+    img_paths = filedialog.askopenfilenames(
+        title="选择待切分图像（可多选）",
+        filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.webp"),
+                   ("所有文件", "*.*")],
+    )
+    if not img_paths:
+        print("未选择图像，退出。")
+        root.destroy()
+        exit()
 
-# 窗口大小
-window_w = 1024
-window_h = 1024
+    # 2. 选择输出根目录
+    parent_dir = filedialog.askdirectory(title="选择输出根目录（每张图像将创建子文件夹）")
+    if not parent_dir:
+        print("未选择输出目录，退出。")
+        root.destroy()
+        exit()
 
-# 重叠大小（与窗口同单位：像素）
-overlap_w = 512
-overlap_h = 512
+    # 3. 参数设置窗口
+    scale_var = tk.DoubleVar(value=0.5)
+    ww_var = tk.IntVar(value=1024)
+    wh_var = tk.IntVar(value=1024)
+    ow_var = tk.IntVar(value=512)
+    oh_var = tk.IntVar(value=512)
+    pad_var = tk.StringVar(value="white")
+    ext_var = tk.StringVar(value=".png")
 
-# 边缘补全背景色：白(255,255,255) 或 黑(0,0,0)
-pad_value_bgr = (255, 255, 255)
+    param_win = tk.Toplevel(root)
+    param_win.title("滑窗切分 — 参数设置")
+    param_win.resizable(False, False)
+    pr = 0
 
-# 输出格式
-ext = ".png"
+    tk.Label(param_win, text="采样比例 (0.1~2.0)：", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=(15, 3))
+    tk.Scale(param_win, from_=0.1, to=2.0, resolution=0.05, orient="horizontal",
+             variable=scale_var, length=150).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="窗口宽度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=ww_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="窗口高度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=wh_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="重叠宽度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=ow_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="重叠高度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=oh_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="边缘填充色:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.OptionMenu(param_win, pad_var, "white", "black").grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="输出格式:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.OptionMenu(param_win, ext_var, ".png", ".jpg", ".tif").grid(row=pr, column=1, sticky="w")
+    pr += 1
 
+    tk.Button(param_win, text="开始切分", command=param_win.destroy, width=12).grid(row=pr, column=0, columnspan=2, pady=(15, 15))
 
-os.makedirs(save_dir, exist_ok=True)
+    param_win.grab_set()
+    root.wait_window(param_win)
+    root.destroy()
 
-img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-if img is None:
-    raise ValueError(f"读取失败: {img_path}")
+    scale = scale_var.get()
+    window_w = ww_var.get()
+    window_h = wh_var.get()
+    overlap_w = ow_var.get()
+    overlap_h = oh_var.get()
+    pad_value_bgr = (255, 255, 255) if pad_var.get() == "white" else (0, 0, 0)
+    ext = ext_var.get()
 
-if scale != 1.0:
-    new_w = int(img.shape[1] * scale)
-    new_h = int(img.shape[0] * scale)
-    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    print(f"共选择 {len(img_paths)} 张图像")
+    print(f"输出根目录: {parent_dir}")
 
-patches, xs, ys, (sx, sy) = sliding_window_patches(
-    img,
-    window_w=window_w,
-    window_h=window_h,
-    overlap_w=overlap_w,
-    overlap_h=overlap_h,
-    pad_value_bgr=pad_value_bgr,
-)
+    total_patches = 0
+    for idx, img_path in enumerate(img_paths, 1):
+        try:
+            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            if img is None:
+                print(f"[{idx}/{len(img_paths)}] 读取失败，跳过: {img_path}")
+                continue
 
-# 命名：x/y 为左上角坐标，方便重组
-for i, (x, y, patch) in enumerate(patches):
-    name = f"patch_y{y:06d}_x{x:06d}{ext}"
-    ok = cv2.imwrite(os.path.join(save_dir, name), patch)
-    if not ok:
-        raise RuntimeError(f"保存失败: {name}")
+            if scale != 1.0:
+                new_w = int(img.shape[1] * scale)
+                new_h = int(img.shape[0] * scale)
+                img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-print("Done.")
-print(f"Input: {img_path}")
-print(f"Output dir: {save_dir}")
-print(f"Image size: W={img.shape[1]}, H={img.shape[0]}")
-print(f"Window: W={window_w}, H={window_h}")
-print(f"Overlap: W={overlap_w}, H={overlap_h}")
-print(f"Stride: sx={sx}, sy={sy}")
-print(f"Grid: nx={len(xs)} (x0..={xs[-1]}), ny={len(ys)} (y0..={ys[-1]})")
-print(f"Num patches: {len(patches)}")
+            # 按图像名创建子文件夹
+            base_name = os.path.splitext(os.path.basename(img_path))[0]
+            save_dir = os.path.join(parent_dir, base_name)
+            os.makedirs(save_dir, exist_ok=True)
+
+            patches, xs, ys, (sx, sy) = sliding_window_patches(
+                img,
+                window_w=window_w,
+                window_h=window_h,
+                overlap_w=overlap_w,
+                overlap_h=overlap_h,
+                pad_value_bgr=pad_value_bgr,
+            )
+
+            for x, y, patch in patches:
+                name = f"patch_y{y:06d}_x{x:06d}{ext}"
+                ok = cv2.imwrite(os.path.join(save_dir, name), patch)
+                if not ok:
+                    print(f"  保存失败: {name}")
+
+            print(f"[{idx}/{len(img_paths)}] {base_name}: {len(patches)} patches -> {save_dir}")
+            total_patches += len(patches)
+        except Exception as e:
+            print(f"[{idx}/{len(img_paths)}] 处理失败 [{img_path}]: {e}")
+
+    print(f"\nDone. 共 {len(img_paths)} 张图像, {total_patches} 个 patches.")
 

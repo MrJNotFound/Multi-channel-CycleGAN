@@ -4,9 +4,9 @@ import numpy as np
 # ======================
 # 直接写死配置：你自己改这里
 # ======================
-img_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new\dual_refined_kidney_20x_24_256_1024.png"
+img_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new\dual_stack_kidney_20x_24_256_1024.png"
 mask_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new_mask\kidney_24_mask.png" # 二值掩膜：白=保留，黑=背景
-out_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new_extracted\dual_refined_kidney_20x_24_256_1024.png"
+out_path = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\WSI_fake\new_extracted\dual_stack_kidney_20x_24_256_1024.png"
 
 # 掩膜阈值：>= thresh 视为前景(白)
 thresh = 128

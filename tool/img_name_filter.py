@@ -4,8 +4,8 @@ import shutil
 # ======================
 # 直接写死配置：你自己改这里
 # ======================
-img_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024\mouse_kidney_dual_256\test_latest\images"# 输入文件夹（会递归扫描）
-out_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\Trans_kidney_20x_24_1024\mouse_kidney_dual_256\test_latest\images_fake"  # 输出文件夹
+img_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\kidney\mouse_kidney_dual_utom_256_re3\test_latest\images"# 输入文件夹（会递归扫描）
+out_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\kidney\mouse_kidney_dual_utom_256_re3\test_latest\images_fake"  # 输出文件夹
 
 # 支持的图像扩展名
 exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}

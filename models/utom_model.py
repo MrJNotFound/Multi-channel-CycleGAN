@@ -55,6 +55,10 @@ class UTOMModel(BaseModel):
             parser.add_argument("--lambda_low_freq", type=float, default=0.5,
                                 help="weight for low-frequency intensity term in content loss "
                                      "(prevents foreground/background inversion in early training)")
+            parser.add_argument("--grad_channel_weights", type=float, nargs="+", default=None,
+                                help="per-channel weights for gradient fusion (arithmetic mean). "
+                                     "e.g. '--grad_channel_weights 0.5 0.5' for equal weighting. "
+                                     "Weights are normalized to sum=1. Default: equal weights for all channels.")
 
         return parser
 
@@ -118,6 +122,12 @@ class UTOMModel(BaseModel):
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
             self.lambda_low_freq = opt.lambda_low_freq
+            # Normalize channel weights to sum=1; default to equal weights
+            if opt.grad_channel_weights is not None:
+                w = torch.tensor(opt.grad_channel_weights, dtype=torch.float32)
+                self.grad_channel_weights = w / w.sum()
+            else:
+                self.grad_channel_weights = None  # will be set per-input in grad_mag
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -228,14 +238,50 @@ class UTOMModel(BaseModel):
         """
 
         def grad_mag(x):
-            x_mean = torch.mean(x, dim=1, keepdim=True)
+            """Per-channel Sobel gradient magnitudes, fused via weighted arithmetic mean.
+
+            Uses scalar per-channel weights (default: equal weights) to combine
+            gradient magnitudes across channels:
+
+              fused = Σ w_c * ||∇x_c||
+
+            Properties compared to geometric mean:
+            - Common boundaries (both channels strong) → reinforced by averaging.
+            - Single-channel noise → attenuated by its weight but won't zero out
+              the fused response (unlike geometric mean where one near-zero channel
+              kills the product).
+            - One channel blank / low-contrast → the other channel's gradient still
+              contributes proportionally to its weight.
+
+            weights are normalized to sum=1; default is equal weights for all channels.
+            """
             kx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
                               dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
             ky = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
                               dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
-            gx = F.conv2d(x_mean, kx, padding=1)
-            gy = F.conv2d(x_mean, ky, padding=1)
-            return torch.sqrt(gx ** 2 + gy ** 2 + 1e-6)
+
+            grads = []
+            for c in range(x.shape[1]):
+                xc = x[:, c:c + 1, :, :]
+                gx = F.conv2d(xc, kx, padding=1)
+                gy = F.conv2d(xc, ky, padding=1)
+                grads.append(torch.sqrt(gx ** 2 + gy ** 2 + 1e-6))
+
+            stacked = torch.cat(grads, dim=1)  # (B, C, H, W)
+
+            if stacked.shape[1] == 1:
+                return stacked  # single channel, no fusion needed
+
+            # Scalar per-channel weights, normalized to sum=1
+            if self.grad_channel_weights is not None:
+                w = self.grad_channel_weights.to(x.device)
+            else:
+                # Default: equal weights
+                w = torch.ones(stacked.shape[1], device=x.device) / stacked.shape[1]
+            w = w.view(1, -1, 1, 1)  # (1, C, 1, 1)
+
+            # Weighted arithmetic mean
+            return torch.sum(stacked * w, dim=1, keepdim=True)
 
         def low_freq(x):
             x_mean = torch.mean(x, dim=1, keepdim=True)

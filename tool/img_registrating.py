@@ -2,7 +2,8 @@ import os
 import cv2
 import numpy as np
 import SimpleITK as sitk
-from natsort import natsorted
+import tkinter as tk
+from tkinter import filedialog
 
 
 def remove_scale_from_affine(mat):
@@ -12,6 +13,26 @@ def remove_scale_from_affine(mat):
     R_no_scale = U @ Vt
     mat_no_scale = np.hstack([R_no_scale, t.reshape(2, 1)])
     return mat_no_scale
+
+def _create_feature_detector():
+    """尝试创建特征检测器，按 SIFT → AKAZE → ORB 优先级回退。"""
+    detectors = []
+    try:
+        detectors.append(("SIFT", cv2.SIFT_create()))
+    except Exception:
+        pass
+    try:
+        detectors.append(("AKAZE", cv2.AKAZE_create()))
+    except Exception:
+        pass
+    try:
+        detectors.append(("ORB", cv2.ORB_create(nfeatures=2000)))
+    except Exception:
+        pass
+    if not detectors:
+        raise RuntimeError("无可用的特征检测器（SIFT/AKAZE/ORB 均不可用）")
+    return detectors
+
 
 def rigid_registration(
         fixed_img,
@@ -29,18 +50,45 @@ def rigid_registration(
     else:
         raise ValueError("不支持的图像维度")
 
-    # 使用 SIFT 特征点检测和描述
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(fixed_gray, None)
-    kp2, des2 = sift.detectAndCompute(moving_gray, None)
+    detectors = _create_feature_detector()
 
-    # 用 NORM_L2 距离的 BFMatcher 匹配
-    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+    kp1, des1, kp2, des2 = None, None, None, None
+    used_detector = None
+    norm_type = cv2.NORM_L2
+
+    for name, detector in detectors:
+        try:
+            kp1, des1 = detector.detectAndCompute(fixed_gray, None)
+            kp2, des2 = detector.detectAndCompute(moving_gray, None)
+            if des1 is not None and des2 is not None and len(kp1) >= 5 and len(kp2) >= 5:
+                used_detector = name
+                if name == "ORB":
+                    norm_type = cv2.NORM_HAMMING
+                else:
+                    norm_type = cv2.NORM_L2
+                break
+        except Exception:
+            continue
+
+    if used_detector is None:
+        print(f"  警告: 所有特征检测器均未能提取足够特征点")
+        return None
+
+    print(f"  使用特征检测器: {used_detector} (kp1={len(kp1)}, kp2={len(kp2)})")
+
+    # 特征匹配
+    if used_detector == "ORB":
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    else:
+        bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
     matches = bf.match(des1, des2)
     matches = sorted(matches, key=lambda x: x.distance)
     matches = matches[:n_matches]
     if len(matches) < 5:
+        print(f"  警告: 匹配点不足 ({len(matches)} < 5)")
         return None
+    print(f"  匹配点数量: {len(matches)}")
+
     pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
     pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
     mat_low, mask = cv2.estimateAffinePartial2D(pts2, pts1)
@@ -282,26 +330,187 @@ def batch_register_images_anchor_subseq(
                 percent = int(finished_steps / total_steps * 100)
                 progress_callback(percent)
 
-input_dir = r"C:\Users\30927\Desktop\78"
-ext=('.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff')
-images = []
-for f in os.listdir(input_dir):
-    if f.lower().endswith(ext):
-        images.append(os.path.join(input_dir, f))
-images = natsorted(images)
-output_dir = r"C:\Users\30927\Desktop\kidney_paper_regist"
-batch_register_images_anchor_subseq(image_paths=images,
-                                    output_folder=output_dir,
-                                    anchor_interval = 1,
-                                    mode = '刚性',
-                                    only_rigid = True,
-                                    scale_factor = 0.1,
-                                    shrink_factors = [20],
-                                    smoothing_sigmas = [2],
-                                    n_matches = 200,
-                                    mesh_size = 8,
-                                    optimizer_iterations = 50,
-                                    optimizer_tol = 1e-5,
-                                    optimizer_bounds = (-200, 200),
-                                    progress_callback = None
-                                    )
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
+
+    # 0. 选择配准方式
+    style_var = tk.StringVar(value="一对一")
+    style_win = tk.Toplevel(root)
+    style_win.title("选择配准方式")
+    style_win.resizable(False, False)
+    tk.Label(style_win, text="请选择配准方式：", font=("", 12)).pack(padx=20, pady=(15, 5))
+    for text, val in [("一对一：所有图像配准到同一参考图像", "一对一"),
+                       ("序列配准：按顺序依次配准到前一张", "序列")]:
+        tk.Radiobutton(style_win, text=text, variable=style_var, value=val, font=("", 11)).pack(anchor="w", padx=20, pady=3)
+    tk.Button(style_win, text="下一步", command=style_win.destroy, width=12).pack(pady=(10, 15))
+    style_win.grab_set()
+    root.wait_window(style_win)
+
+    reg_style = style_var.get()
+
+    if reg_style == "一对一":
+        # ===== 一对一配准 =====
+        # 1. 选择参考图像
+        ref_path = filedialog.askopenfilename(
+            title="选择参考图像（固定图像，配准目标）",
+            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                       ("所有文件", "*.*")],
+        )
+        if not ref_path:
+            print("未选择参考图像，退出。")
+            root.destroy()
+            exit()
+
+        # 2. 选择待配准图像（可多选）
+        tgt_paths = filedialog.askopenfilenames(
+            title="选择待配准图像（可多选，将逐一配准到参考图像）",
+            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                       ("所有文件", "*.*")],
+        )
+        if not tgt_paths:
+            print("未选择待配准图像，退出。")
+            root.destroy()
+            exit()
+    else:
+        # ===== 序列配准 =====
+        # 选择序列图像（可多选，按文件名排序作为序列顺序）
+        seq_paths = filedialog.askopenfilenames(
+            title="选择序列图像（可多选，按文件名自然排序确定顺序）",
+            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                       ("所有文件", "*.*")],
+        )
+        if not seq_paths:
+            print("未选择图像，退出。")
+            root.destroy()
+            exit()
+        from natsort import natsorted
+        seq_paths = natsorted(list(seq_paths))
+        ref_path = None  # 序列模式下不使用参考图像
+
+    # 3. 选择输出文件夹
+    output_dir = filedialog.askdirectory(title="选择输出文件夹")
+    if not output_dir:
+        print("未选择输出文件夹，退出。")
+        root.destroy()
+        exit()
+
+    # 4. 选择配准模式（算法）
+    mode_var = tk.StringVar(value="刚性")
+    mode_win = tk.Toplevel(root)
+    mode_win.title("选择配准算法")
+    mode_win.resizable(False, False)
+    tk.Label(mode_win, text="请选择配准算法：", font=("", 12)).pack(padx=20, pady=(15, 5))
+    for text, val in [("刚性 (Rigid)", "刚性"), ("弹性 (Elastic)", "弹性"), ("刚性+弹性 (Rigid+Elastic)", "刚性+弹性")]:
+        tk.Radiobutton(mode_win, text=text, variable=mode_var, value=val, font=("", 11)).pack(anchor="w", padx=30, pady=2)
+    tk.Button(mode_win, text="开始配准", command=mode_win.destroy, width=12).pack(pady=(10, 15))
+    mode_win.grab_set()
+    root.wait_window(mode_win)
+
+    mode = mode_var.get()
+    root.destroy()
+
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"配准方式: {reg_style}")
+    print(f"配准算法: {mode}")
+    print(f"输出目录: {output_dir}")
+
+    count = 0
+
+    if reg_style == "一对一":
+        ref_img = cv2.imread(ref_path, cv2.IMREAD_COLOR)
+        if ref_img is None:
+            raise FileNotFoundError(f"读取参考图像失败: {ref_path}")
+        print(f"参考图像: {ref_path}")
+
+        for tgt_path in tgt_paths:
+            try:
+                tgt_img = cv2.imread(tgt_path, cv2.IMREAD_COLOR)
+                if tgt_img is None:
+                    print(f"读取失败，跳过: {tgt_path}")
+                    continue
+
+                if mode == "刚性":
+                    result = rigid_registration(ref_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=False)
+                    if result is None:
+                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        continue
+                elif mode == "弹性":
+                    result = elastic_registration(ref_img, tgt_img, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
+                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+                elif mode == "刚性+弹性":
+                    rigid_result = rigid_registration(ref_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=True)
+                    if rigid_result is None:
+                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        continue
+                    result = elastic_registration(ref_img, rigid_result, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
+                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+
+                out_path = os.path.join(output_dir, os.path.basename(tgt_path))
+                ok = cv2.imwrite(out_path, result)
+                if not ok:
+                    print(f"保存失败: {out_path}")
+                    continue
+                print(f"[{count + 1}/{len(tgt_paths)}] Saved: {out_path}")
+                count += 1
+            except Exception as e:
+                print(f"处理失败 [{tgt_path}]: {e}")
+
+        print(f"完成！共配准 {count}/{len(tgt_paths)} 张图像。")
+
+    else:
+        # ===== 序列配准 =====
+        if len(seq_paths) < 2:
+            print("至少需要 2 张图像进行序列配准，退出。")
+            exit()
+
+        # 读取第一张（锚点）
+        anchor_img = cv2.imread(seq_paths[0], cv2.IMREAD_COLOR)
+        if anchor_img is None:
+            raise FileNotFoundError(f"读取失败: {seq_paths[0]}")
+
+        # 保存第一张（不配准）
+        first_out = os.path.join(output_dir, os.path.basename(seq_paths[0]))
+        cv2.imwrite(first_out, anchor_img)
+        print(f"[1/{len(seq_paths)}] Anchor: {first_out}")
+
+        prev_img = anchor_img
+        count = 1
+
+        for i, tgt_path in enumerate(seq_paths[1:], 2):
+            try:
+                tgt_img = cv2.imread(tgt_path, cv2.IMREAD_COLOR)
+                if tgt_img is None:
+                    print(f"读取失败，跳过: {tgt_path}")
+                    continue
+
+                if mode == "刚性":
+                    result = rigid_registration(prev_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=False)
+                    if result is None:
+                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        continue
+                elif mode == "弹性":
+                    result = elastic_registration(prev_img, tgt_img, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
+                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+                elif mode == "刚性+弹性":
+                    rigid_result = rigid_registration(prev_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=True)
+                    if rigid_result is None:
+                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        continue
+                    result = elastic_registration(prev_img, rigid_result, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
+                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+
+                # 将配准结果作为下一张的参考
+                prev_img = result
+
+                out_path = os.path.join(output_dir, os.path.basename(tgt_path))
+                ok = cv2.imwrite(out_path, result)
+                if not ok:
+                    print(f"保存失败: {out_path}")
+                    continue
+                print(f"[{i}/{len(seq_paths)}] Saved: {out_path}")
+                count += 1
+            except Exception as e:
+                print(f"处理失败 [{tgt_path}]: {e}")
+
+        print(f"完成！共配准 {count}/{len(seq_paths)} 张图像。")

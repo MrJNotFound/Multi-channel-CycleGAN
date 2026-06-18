@@ -1,6 +1,8 @@
 import os
 import random
 import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox
 from typing import List, Optional, Tuple
 import numpy as np
 from PIL import Image
@@ -19,82 +21,29 @@ except Exception:
     RESAMPLE_NEAREST = Image.NEAREST  # type: ignore[attr-defined]
 
 # =========================
-# 模式选择（按需修改）
+# 默认参数（运行时会通过 GUI 覆盖）
 # =========================
-# 主模式：
-#   1) "random" : 无要求，随机截取 patch
-#   2) "mask"   : 带参考 mask，按 mask 背景比例过滤
-#   3) "color"  : 根据颜色判别背景（仅支持接近纯白 / 纯黑）
 mode = "color"
-
-# 是否启用第二输入（与主输入图像完全对应的图像）
-# False：只裁剪主输入图像
-# True ：在主图 crop 的同一区域同步裁剪第二输入图像，并输出配对 patch
 enable_secondary_input = False
-
-# =========================
-# 输入 / 输出（按需修改）
-# =========================
-# 主输入图像目录：所有模式都需要
-primary_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_HE\WSI"
-# 第二输入图像目录：仅在 enable_secondary_input=True 时使用
-secondary_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_Trans\WSI_registered"
-# mask 目录：仅在 mode="mask" 时使用
-mask_dir = r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_BF\kidney_20x_1\WSI_mask"
-
-# 输出根目录：脚本会在下面自动创建 images / paired / masks 子目录
-output_dir = r"C:\Users\30927\Desktop\Multi-layer-CycleGAN\datasets\mouse_kidney_dual_BF_AF_HE\trainB"
-
-# patch 宽度（像素）
+primary_dir = ""
+secondary_dir = ""
+mask_dir = ""
+output_dir = ""
 patch_w = 512
-# patch 高度（像素）
 patch_h = 512
-# 期望生成的 patch 总数（全局总数，不是每张大图的数量）
 total_patches = 2000
-
-# 是否递归扫描子目录中的图像
-# True：扫描 primary_dir / secondary_dir / mask_dir 下所有子文件夹
-# False：只扫描当前目录这一层
 recursive = True
-# 当输入图像尺寸小于 patch_w / patch_h 时，是否允许先放大再裁剪
-# False：直接跳过过小图像
-# True ：缩放到足够大后再裁剪
 allow_smaller = False
-
-# 主图 / 第二输入 patch 的保存格式，如 png / jpg / tif
 output_ext = "jpg"
-# mask patch 的保存格式，建议保持 png，避免 jpg 压缩污染 mask
 mask_output_ext = "png"
-# JPEG 保存质量，仅当 output_ext 或 mask_output_ext 为 jpg/jpeg 时生效
 jpeg_quality = 95
-# 输出文件名前缀，例如 patch_000001.png
 prefix = "patch"
-# 随机种子；设为固定值可复现相同的采样结果，设为 None 则每次随机
 seed: Optional[int] = 114514
-
-# =========================
-# 背景过滤参数（按需修改）
-# =========================
-# patch 中允许的“背景最大占比”
-# mode="mask" 时：背景定义为 mask 中的背景像素
-# mode="color" 时：背景定义为接近纯白/纯黑的像素
-# mode="random" 时：该参数不会被使用
 max_bg_ratio = 0.7
-# mode="mask" 时，mask 中哪个像素值视为背景；默认 0 为背景
 mask_background_value = 0
-# mode="mask" 时，背景值容差
-# 例如 background_value=0, tolerance=5，则 0~5 都视为背景
 mask_background_tolerance = 0
-
-# mode="color" 时使用：仅判断“接近纯白 / 接近纯黑”背景
-# 可选值：
-#   "white"       只把接近纯白区域当背景
-#   "black"       只把接近纯黑区域当背景
-#   "white_black" 同时把接近纯白和纯黑都当背景
 color_bg_mode = "white_black"
-# 接近纯白阈值：所有通道 >= white_thr 认为该像素接近纯白
 white_thr = 230
-# 接近纯黑阈值：所有通道 <= black_thr 认为该像素接近纯黑
 black_thr = 20
 
 # =========================
@@ -115,7 +64,7 @@ mask_size_mismatch = "resize_to_primary"
 # 背景过滤较严格时，可以适当调大
 per_image_attempt_mul = 50
 
-# 当第一轮平均分配后 patch 数还不够时，最多进行多少轮“补齐采样”
+# 当第一轮平均分配后 patch 数还不够时，最多进行多少轮"补齐采样"
 # 过小可能补不够，过大则在极端情况下会更慢
 fill_rounds_limit = 5
 
@@ -635,5 +584,126 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
+
+    # ===== 1. 模式选择 =====
+    mode_var = tk.StringVar(value="color")
+    secondary_var = tk.BooleanVar(value=False)
+    seed_var = tk.StringVar(value="114514")
+
+    mode_win = tk.Toplevel(root)
+    mode_win.title("Patch 生成 — 模式选择")
+    mode_win.resizable(False, False)
+    row = 0
+
+    tk.Label(mode_win, text="采样模式：", font=("", 11)).grid(row=row, column=0, sticky="w", padx=15, pady=(15, 2))
+    row += 1
+    for text, val in [("随机 (Random)", "random"), ("Mask 过滤 (Mask)", "mask"), ("颜色过滤 (Color)", "color")]:
+        tk.Radiobutton(mode_win, text=text, variable=mode_var, value=val, font=("", 11)).grid(row=row, column=0, sticky="w", padx=30, pady=1)
+        row += 1
+
+    tk.Checkbutton(mode_win, text="启用第二输入（配对裁剪）", variable=secondary_var, font=("", 11)).grid(row=row, column=0, sticky="w", padx=15, pady=(8, 2))
+    row += 1
+
+    tk.Label(mode_win, text="随机种子 (留空=随机)：", font=("", 11)).grid(row=row, column=0, sticky="w", padx=15, pady=(8, 2))
+    row += 1
+    tk.Entry(mode_win, textvariable=seed_var, width=20).grid(row=row, column=0, sticky="w", padx=30, pady=(0, 5))
+    row += 1
+
+    tk.Button(mode_win, text="下一步", command=mode_win.destroy, width=12).grid(row=row, column=0, pady=(10, 15), padx=15)
+
+    mode_win.grab_set()
+    root.wait_window(mode_win)
+
+    mode = mode_var.get()
+    enable_secondary_input = secondary_var.get()
+    seed_str = seed_var.get().strip()
+    seed = int(seed_str) if seed_str else None
+
+    # ===== 2. 选择主输入目录 =====
+    primary_dir = filedialog.askdirectory(title="选择主输入图像目录")
+    if not primary_dir:
+        print("未选择主输入目录，退出。")
+        root.destroy()
+        exit()
+
+    # ===== 3. 选择 mask 目录（仅 mask 模式） =====
+    if mode == "mask":
+        mask_dir = filedialog.askdirectory(title="选择 Mask 目录")
+        if not mask_dir:
+            print("未选择 Mask 目录，退出。")
+            root.destroy()
+            exit()
+
+    # ===== 4. 选择第二输入目录 =====
+    if enable_secondary_input:
+        secondary_dir = filedialog.askdirectory(title="选择第二输入图像目录（配对）")
+        if not secondary_dir:
+            print("未选择第二输入目录，退出。")
+            root.destroy()
+            exit()
+
+    # ===== 5. 选择输出目录 =====
+    output_dir = filedialog.askdirectory(title="选择输出根目录")
+    if not output_dir:
+        print("未选择输出目录，退出。")
+        root.destroy()
+        exit()
+
+    # ===== 6. 参数设置窗口 =====
+    pw_var = tk.IntVar(value=512)
+    ph_var = tk.IntVar(value=512)
+    total_var = tk.IntVar(value=2000)
+    bg_var = tk.DoubleVar(value=0.7)
+    ext_var = tk.StringVar(value="jpg")
+    rec_var = tk.BooleanVar(value=True)
+    small_var = tk.BooleanVar(value=False)
+
+    param_win = tk.Toplevel(root)
+    param_win.title("Patch 生成 — 参数设置")
+    param_win.resizable(False, False)
+    pr = 0
+
+    tk.Label(param_win, text="Patch 宽度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=(15, 3))
+    tk.Entry(param_win, textvariable=pw_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="Patch 高度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=ph_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="目标 Patch 总数:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=total_var, width=8).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="最大背景占比:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Scale(param_win, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+             variable=bg_var, length=150).grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Label(param_win, text="输出格式:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.OptionMenu(param_win, ext_var, "jpg", "png", "tif").grid(row=pr, column=1, sticky="w")
+    pr += 1
+    tk.Checkbutton(param_win, text="递归扫描子目录", variable=rec_var, font=("", 11)).grid(row=pr, column=0, columnspan=2, sticky="w", padx=15, pady=3)
+    pr += 1
+    tk.Checkbutton(param_win, text="允许放大过小图像", variable=small_var, font=("", 11)).grid(row=pr, column=0, columnspan=2, sticky="w", padx=15, pady=3)
+    pr += 1
+
+    tk.Button(param_win, text="开始生成", command=param_win.destroy, width=12).grid(row=pr, column=0, columnspan=2, pady=(10, 15))
+
+    param_win.grab_set()
+    root.wait_window(param_win)
+    root.destroy()
+
+    patch_w = pw_var.get()
+    patch_h = ph_var.get()
+    total_patches = total_var.get()
+    max_bg_ratio = bg_var.get()
+    output_ext = ext_var.get()
+    recursive = rec_var.get()
+    allow_smaller = small_var.get()
+
+    print(f"Mode: {mode} | Secondary: {enable_secondary_input}")
+    print(f"Primary: {primary_dir}")
+    print(f"Output: {output_dir}")
+    print(f"Patch: {patch_w}x{patch_h} | Total: {total_patches} | Max BG: {max_bg_ratio}")
+
     main()
 

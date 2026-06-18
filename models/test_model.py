@@ -1,5 +1,6 @@
 from .base_model import BaseModel
 from . import networks
+import sys
 
 
 class TestModel(BaseModel):
@@ -45,12 +46,17 @@ class TestModel(BaseModel):
         # specify the models you want to save to the disk. The training/test scripts will call <BaseModel.save_networks> and <BaseModel.load_networks>
         self.model_names = ["G" + opt.model_suffix]  # only generator is needed.
         netG_type = opt.netG
-        if opt.input_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
-            n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
-            netG_type = f"dual_resnet_{n_blocks}"
-        elif opt.output_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
-            n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
-            netG_type = f"dual_output_resnet_{n_blocks}"
+        # Only auto-switch to dual-branch variants when user hasn't explicitly set --netG.
+        # When --netG is in sys.argv, respect the user's choice (e.g. standard ResnetGenerator
+        # for cycle_gan_stack checkpoints).
+        user_set_netG = any("--netG" == sys.argv[i] for i in range(len(sys.argv) - 1))
+        if not user_set_netG:
+            if opt.input_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
+                n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
+                netG_type = f"dual_resnet_{n_blocks}"
+            elif opt.output_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
+                n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
+                netG_type = f"dual_output_resnet_{n_blocks}"
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
         # assigns the model to self.netG_[suffix] so that it can be loaded
