@@ -331,6 +331,8 @@ def batch_register_images_anchor_subseq(
                 progress_callback(percent)
 
 if __name__ == "__main__":
+    from natsort import natsorted
+
     root = tk.Tk()
     root.withdraw()
 
@@ -340,8 +342,11 @@ if __name__ == "__main__":
     style_win.title("选择配准方式")
     style_win.resizable(False, False)
     tk.Label(style_win, text="请选择配准方式：", font=("", 12)).pack(padx=20, pady=(15, 5))
-    for text, val in [("一对一：所有图像配准到同一参考图像", "一对一"),
-                       ("序列配准：按顺序依次配准到前一张", "序列")]:
+    for text, val in [
+        ("一对一：所有图像配准到同一参考图像", "一对一"),
+        ("序列配准：按顺序依次配准到前一张", "序列"),
+        ("锚点配准：按间隔选定锚点，非锚点配准到最近锚点", "锚点"),
+    ]:
         tk.Radiobutton(style_win, text=text, variable=style_var, value=val, font=("", 11)).pack(anchor="w", padx=20, pady=3)
     tk.Button(style_win, text="下一步", command=style_win.destroy, width=12).pack(pady=(10, 15))
     style_win.grab_set()
@@ -349,75 +354,254 @@ if __name__ == "__main__":
 
     reg_style = style_var.get()
 
+    # ===== 选择图像 =====
+    ref_path = None
+    tgt_paths = None
+    seq_paths = None
+
     if reg_style == "一对一":
-        # ===== 一对一配准 =====
-        # 1. 选择参考图像
         ref_path = filedialog.askopenfilename(
             title="选择参考图像（固定图像，配准目标）",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
-                       ("所有文件", "*.*")],
+            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
         )
         if not ref_path:
             print("未选择参考图像，退出。")
             root.destroy()
             exit()
 
-        # 2. 选择待配准图像（可多选）
         tgt_paths = filedialog.askopenfilenames(
             title="选择待配准图像（可多选，将逐一配准到参考图像）",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
-                       ("所有文件", "*.*")],
+            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
         )
         if not tgt_paths:
             print("未选择待配准图像，退出。")
             root.destroy()
             exit()
     else:
-        # ===== 序列配准 =====
-        # 选择序列图像（可多选，按文件名排序作为序列顺序）
+        # 序列 / 锚点：选择多张图像，按文件名排序
+        title = "选择序列图像（可多选，按文件名自然排序确定顺序）" if reg_style == "序列" else "选择序列图像（可多选，按文件名自然排序）"
         seq_paths = filedialog.askopenfilenames(
-            title="选择序列图像（可多选，按文件名自然排序确定顺序）",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
-                       ("所有文件", "*.*")],
+            title=title,
+            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
         )
         if not seq_paths:
             print("未选择图像，退出。")
             root.destroy()
             exit()
-        from natsort import natsorted
         seq_paths = natsorted(list(seq_paths))
-        ref_path = None  # 序列模式下不使用参考图像
 
-    # 3. 选择输出文件夹
+    # 输出目录
     output_dir = filedialog.askdirectory(title="选择输出文件夹")
     if not output_dir:
         print("未选择输出文件夹，退出。")
         root.destroy()
         exit()
 
-    # 4. 选择配准模式（算法）
+    # ===== 参数设置窗口 =====
     mode_var = tk.StringVar(value="刚性")
-    mode_win = tk.Toplevel(root)
-    mode_win.title("选择配准算法")
-    mode_win.resizable(False, False)
-    tk.Label(mode_win, text="请选择配准算法：", font=("", 12)).pack(padx=20, pady=(15, 5))
-    for text, val in [("刚性 (Rigid)", "刚性"), ("弹性 (Elastic)", "弹性"), ("刚性+弹性 (Rigid+Elastic)", "刚性+弹性")]:
-        tk.Radiobutton(mode_win, text=text, variable=mode_var, value=val, font=("", 11)).pack(anchor="w", padx=30, pady=2)
-    tk.Button(mode_win, text="开始配准", command=mode_win.destroy, width=12).pack(pady=(10, 15))
-    mode_win.grab_set()
-    root.wait_window(mode_win)
+    anchor_var = tk.IntVar(value=10)
+    sf_var = tk.DoubleVar(value=0.1)
+    nm_var = tk.IntVar(value=200)
+    mesh_var = tk.IntVar(value=8)
+    sh_var = tk.StringVar(value="10")
+    sm_var = tk.StringVar(value="2")
+    oi_var = tk.IntVar(value=50)
+    ot_var = tk.StringVar(value="1e-5")
+    ob_lo_var = tk.IntVar(value=-200)
+    ob_hi_var = tk.IntVar(value=200)
+    only_rigid_var = tk.BooleanVar(value=False)
 
-    mode = mode_var.get()
+    param_win = tk.Toplevel(root)
+    param_win.title("配准参数设置")
+    param_win.resizable(False, False)
+    r = 0
+
+    tk.Label(param_win, text="配准算法：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=(15, 3))
+    mode_frame = tk.Frame(param_win)
+    mode_frame.grid(row=r, column=1, sticky="w")
+    for text, val in [("刚性", "刚性"), ("弹性", "弹性"), ("刚性+弹性", "刚性+弹性")]:
+        tk.Radiobutton(mode_frame, text=text, variable=mode_var, value=val, font=("", 10)).pack(side="left", padx=2)
+    r += 1
+
+    if reg_style == "锚点":
+        tk.Label(param_win, text="锚点间隔：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+        tk.Entry(param_win, textvariable=anchor_var, width=6).grid(row=r, column=1, sticky="w")
+        tk.Label(param_win, text="(每隔 N 张选一个锚点)", font=("", 9)).grid(row=r, column=2, sticky="w")
+        r += 1
+
+    tk.Label(param_win, text="缩放因子：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=sf_var, width=6).grid(row=r, column=1, sticky="w")
+    tk.Label(param_win, text="(SIFT 匹配用的降采样比例)", font=("", 9)).grid(row=r, column=2, sticky="w")
+    r += 1
+
+    tk.Label(param_win, text="SIFT 匹配数：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=nm_var, width=6).grid(row=r, column=1, sticky="w")
+    r += 1
+
+    tk.Checkbutton(param_win, text="强制纯刚性（去除缩放分量）", variable=only_rigid_var, font=("", 10)).grid(row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
+    r += 1
+
+    # 弹性参数（mode=弹性 / 刚性+弹性 时生效）
+    tk.Label(param_win, text="--- 弹性配准参数 ---", font=("", 10, "bold")).grid(row=r, column=0, columnspan=3, sticky="w", padx=15, pady=(8, 2))
+    r += 1
+
+    tk.Label(param_win, text="B-spline 网格：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=mesh_var, width=6).grid(row=r, column=1, sticky="w")
+    r += 1
+
+    tk.Label(param_win, text="Shrink Factors：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=sh_var, width=6).grid(row=r, column=1, sticky="w")
+    tk.Label(param_win, text="(逗号分隔，如 10,5)", font=("", 9)).grid(row=r, column=2, sticky="w")
+    r += 1
+
+    tk.Label(param_win, text="Smoothing Sigmas：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=sm_var, width=6).grid(row=r, column=1, sticky="w")
+    tk.Label(param_win, text="(逗号分隔，如 2,1)", font=("", 9)).grid(row=r, column=2, sticky="w")
+    r += 1
+
+    tk.Label(param_win, text="优化迭代次数：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=oi_var, width=6).grid(row=r, column=1, sticky="w")
+    r += 1
+
+    tk.Label(param_win, text="优化容差：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    tk.Entry(param_win, textvariable=ot_var, width=6).grid(row=r, column=1, sticky="w")
+    r += 1
+
+    tk.Label(param_win, text="边界下/上限：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+    frm = tk.Frame(param_win)
+    frm.grid(row=r, column=1, sticky="w")
+    tk.Entry(frm, textvariable=ob_lo_var, width=5).pack(side="left")
+    tk.Label(frm, text=" ~ ", font=("", 10)).pack(side="left")
+    tk.Entry(frm, textvariable=ob_hi_var, width=5).pack(side="left")
+    r += 1
+
+    tk.Button(param_win, text="开始配准", command=param_win.destroy, width=12).grid(row=r, column=0, columnspan=3, pady=(15, 15))
+
+    # 参数收集（带输入验证，循环直到正确或取消）
+    mode = anchor_interval = scale_factor = n_matches = None
+    only_rigid = mesh_size = optimizer_iterations = optimizer_tol = None
+    shrink_factors = smoothing_sigmas = optimizer_bounds = None
+
+    while True:
+        param_win.grab_set()
+        root.wait_window(param_win)
+        try:
+            mode = mode_var.get()
+            anchor_interval = anchor_var.get()
+            scale_factor = sf_var.get()
+            n_matches = nm_var.get()
+            only_rigid = only_rigid_var.get()
+            mesh_size = mesh_var.get()
+            # 容错：替换中文逗号
+            raw_sh = sh_var.get().replace("，", ",")
+            raw_sm = sm_var.get().replace("，", ",")
+            shrink_factors = [int(x.strip()) for x in raw_sh.split(",") if x.strip()]
+            smoothing_sigmas = [float(x.strip()) for x in raw_sm.split(",") if x.strip()]
+            if not shrink_factors:
+                raise ValueError("Shrink Factors 不能为空")
+            if not smoothing_sigmas:
+                raise ValueError("Smoothing Sigmas 不能为空")
+            optimizer_iterations = oi_var.get()
+            raw_ot = ot_var.get().strip()
+            if not raw_ot:
+                raise ValueError("优化容差不能为空")
+            optimizer_tol = float(raw_ot)
+            optimizer_bounds = (ob_lo_var.get(), ob_hi_var.get())
+            break  # 验证通过
+        except ValueError as e:
+            from tkinter import messagebox
+            messagebox.showerror("输入格式错误", f"{e}\n请修正后重试。", parent=root)
+            # 重建参数窗口（原窗口已被 destroy）
+            param_win = tk.Toplevel(root)
+            param_win.title("配准参数设置")
+            param_win.resizable(False, False)
+            r = 0
+            tk.Label(param_win, text="配准算法：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=(15, 3))
+            mode_frame2 = tk.Frame(param_win)
+            mode_frame2.grid(row=r, column=1, sticky="w")
+            for text, val in [("刚性", "刚性"), ("弹性", "弹性"), ("刚性+弹性", "刚性+弹性")]:
+                tk.Radiobutton(mode_frame2, text=text, variable=mode_var, value=val, font=("", 10)).pack(side="left", padx=2)
+            r += 1
+            if reg_style == "锚点":
+                tk.Label(param_win, text="锚点间隔：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+                tk.Entry(param_win, textvariable=anchor_var, width=6).grid(row=r, column=1, sticky="w")
+                tk.Label(param_win, text="(每隔 N 张选一个锚点)", font=("", 9)).grid(row=r, column=2, sticky="w")
+                r += 1
+            tk.Label(param_win, text="缩放因子：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=sf_var, width=6).grid(row=r, column=1, sticky="w")
+            r += 1
+            tk.Label(param_win, text="SIFT 匹配数：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=nm_var, width=6).grid(row=r, column=1, sticky="w")
+            r += 1
+            tk.Checkbutton(param_win, text="强制纯刚性（去除缩放分量）", variable=only_rigid_var, font=("", 10)).grid(row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
+            r += 1
+            tk.Label(param_win, text="--- 弹性配准参数 ---", font=("", 10, "bold")).grid(row=r, column=0, columnspan=3, sticky="w", padx=15, pady=(8, 2))
+            r += 1
+            tk.Label(param_win, text="B-spline 网格：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=mesh_var, width=6).grid(row=r, column=1, sticky="w")
+            r += 1
+            tk.Label(param_win, text="Shrink Factors：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=sh_var, width=6).grid(row=r, column=1, sticky="w")
+            tk.Label(param_win, text="(逗号分隔，如 10,5)", font=("", 9)).grid(row=r, column=2, sticky="w")
+            r += 1
+            tk.Label(param_win, text="Smoothing Sigmas：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=sm_var, width=6).grid(row=r, column=1, sticky="w")
+            tk.Label(param_win, text="(逗号分隔，如 2,1)", font=("", 9)).grid(row=r, column=2, sticky="w")
+            r += 1
+            tk.Label(param_win, text="优化迭代次数：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=oi_var, width=6).grid(row=r, column=1, sticky="w")
+            r += 1
+            tk.Label(param_win, text="优化容差：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            tk.Entry(param_win, textvariable=ot_var, width=6).grid(row=r, column=1, sticky="w")
+            r += 1
+            tk.Label(param_win, text="边界下/上限：", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
+            frm2 = tk.Frame(param_win)
+            frm2.grid(row=r, column=1, sticky="w")
+            tk.Entry(frm2, textvariable=ob_lo_var, width=5).pack(side="left")
+            tk.Label(frm2, text=" ~ ", font=("", 10)).pack(side="left")
+            tk.Entry(frm2, textvariable=ob_hi_var, width=5).pack(side="left")
+            r += 1
+            tk.Button(param_win, text="开始配准", command=param_win.destroy, width=12).grid(row=r, column=0, columnspan=3, pady=(15, 15))
+
     root.destroy()
 
     os.makedirs(output_dir, exist_ok=True)
     print(f"配准方式: {reg_style}")
     print(f"配准算法: {mode}")
     print(f"输出目录: {output_dir}")
+    if reg_style == "锚点":
+        print(f"锚点间隔: {anchor_interval}")
+    print(f"参数: scale={scale_factor}, matches={n_matches}, only_rigid={only_rigid}")
+    if mode in ("弹性", "刚性+弹性"):
+        print(f"弹性: mesh={mesh_size}, shrink={shrink_factors}, smooth={smoothing_sigmas}, iter={optimizer_iterations}, tol={optimizer_tol}, bounds={optimizer_bounds}")
+    print()
 
     count = 0
 
-    if reg_style == "一对一":
+    if reg_style == "锚点":
+        # ===== 锚点配准 =====
+        if len(seq_paths) < 2:
+            print("至少需要 2 张图像，退出。")
+            exit()
+
+        batch_register_images_anchor_subseq(
+            image_paths=seq_paths,
+            output_folder=output_dir,
+            anchor_interval=anchor_interval,
+            mode=mode,
+            only_rigid=only_rigid,
+            scale_factor=scale_factor,
+            shrink_factors=shrink_factors,
+            smoothing_sigmas=smoothing_sigmas,
+            n_matches=n_matches,
+            mesh_size=mesh_size,
+            optimizer_iterations=optimizer_iterations,
+            optimizer_tol=optimizer_tol,
+            optimizer_bounds=optimizer_bounds,
+        )
+        print(f"完成！共处理 {len(seq_paths)} 张图像。")
+
+    elif reg_style == "一对一":
         ref_img = cv2.imread(ref_path, cv2.IMREAD_COLOR)
         if ref_img is None:
             raise FileNotFoundError(f"读取参考图像失败: {ref_path}")
@@ -431,20 +615,20 @@ if __name__ == "__main__":
                     continue
 
                 if mode == "刚性":
-                    result = rigid_registration(ref_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=False)
+                    result = rigid_registration(ref_img, tgt_img, n_matches=n_matches, scale_factor=scale_factor, only_rigid=only_rigid)
                     if result is None:
-                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        print(f"刚性配准失败，跳过: {tgt_path}")
                         continue
                 elif mode == "弹性":
-                    result = elastic_registration(ref_img, tgt_img, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
-                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+                    result = elastic_registration(ref_img, tgt_img, mesh_size=mesh_size, shrink_factors=shrink_factors, smoothing_sigmas=smoothing_sigmas,
+                                                  optimizer_iterations=optimizer_iterations, optimizer_tol=optimizer_tol, optimizer_bounds=optimizer_bounds)
                 elif mode == "刚性+弹性":
-                    rigid_result = rigid_registration(ref_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=True)
+                    rigid_result = rigid_registration(ref_img, tgt_img, n_matches=n_matches, scale_factor=scale_factor, only_rigid=True)
                     if rigid_result is None:
-                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        print(f"刚性配准失败，跳过: {tgt_path}")
                         continue
-                    result = elastic_registration(ref_img, rigid_result, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
-                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+                    result = elastic_registration(ref_img, rigid_result, mesh_size=mesh_size, shrink_factors=shrink_factors, smoothing_sigmas=smoothing_sigmas,
+                                                  optimizer_iterations=optimizer_iterations, optimizer_tol=optimizer_tol, optimizer_bounds=optimizer_bounds)
 
                 out_path = os.path.join(output_dir, os.path.basename(tgt_path))
                 ok = cv2.imwrite(out_path, result)
@@ -461,15 +645,13 @@ if __name__ == "__main__":
     else:
         # ===== 序列配准 =====
         if len(seq_paths) < 2:
-            print("至少需要 2 张图像进行序列配准，退出。")
+            print("至少需要 2 张图像，退出。")
             exit()
 
-        # 读取第一张（锚点）
         anchor_img = cv2.imread(seq_paths[0], cv2.IMREAD_COLOR)
         if anchor_img is None:
             raise FileNotFoundError(f"读取失败: {seq_paths[0]}")
 
-        # 保存第一张（不配准）
         first_out = os.path.join(output_dir, os.path.basename(seq_paths[0]))
         cv2.imwrite(first_out, anchor_img)
         print(f"[1/{len(seq_paths)}] Anchor: {first_out}")
@@ -485,22 +667,21 @@ if __name__ == "__main__":
                     continue
 
                 if mode == "刚性":
-                    result = rigid_registration(prev_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=False)
+                    result = rigid_registration(prev_img, tgt_img, n_matches=n_matches, scale_factor=scale_factor, only_rigid=only_rigid)
                     if result is None:
-                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        print(f"刚性配准失败，跳过: {tgt_path}")
                         continue
                 elif mode == "弹性":
-                    result = elastic_registration(prev_img, tgt_img, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
-                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+                    result = elastic_registration(prev_img, tgt_img, mesh_size=mesh_size, shrink_factors=shrink_factors, smoothing_sigmas=smoothing_sigmas,
+                                                  optimizer_iterations=optimizer_iterations, optimizer_tol=optimizer_tol, optimizer_bounds=optimizer_bounds)
                 elif mode == "刚性+弹性":
-                    rigid_result = rigid_registration(prev_img, tgt_img, n_matches=200, scale_factor=0.1, only_rigid=True)
+                    rigid_result = rigid_registration(prev_img, tgt_img, n_matches=n_matches, scale_factor=scale_factor, only_rigid=True)
                     if rigid_result is None:
-                        print(f"刚性配准失败（特征点不足），跳过: {tgt_path}")
+                        print(f"刚性配准失败，跳过: {tgt_path}")
                         continue
-                    result = elastic_registration(prev_img, rigid_result, mesh_size=8, shrink_factors=[10], smoothing_sigmas=[2],
-                                                  optimizer_iterations=50, optimizer_tol=1e-5, optimizer_bounds=(-200, 200))
+                    result = elastic_registration(prev_img, rigid_result, mesh_size=mesh_size, shrink_factors=shrink_factors, smoothing_sigmas=smoothing_sigmas,
+                                                  optimizer_iterations=optimizer_iterations, optimizer_tol=optimizer_tol, optimizer_bounds=optimizer_bounds)
 
-                # 将配准结果作为下一张的参考
                 prev_img = result
 
                 out_path = os.path.join(output_dir, os.path.basename(tgt_path))

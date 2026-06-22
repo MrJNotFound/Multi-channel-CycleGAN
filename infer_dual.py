@@ -59,6 +59,7 @@ if __name__ == "__main__":
         "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\kidney",
         "--num_test", "10000",
         "--epoch", "latest",
+        ""
     ]
 
     opt = TestOptions().parse()  # get test options

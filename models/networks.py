@@ -272,6 +272,7 @@ class GANLoss(nn.Module):
         Returns:
             the calculated loss.
         """
+        global loss
         if self.gan_mode in ["lsgan", "vanilla"]:
             target_tensor = self.get_target_tensor(prediction, target_is_real)
             loss = self.loss(prediction, target_tensor)
