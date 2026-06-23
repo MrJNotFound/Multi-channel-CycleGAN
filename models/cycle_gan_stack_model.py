@@ -1,8 +1,8 @@
 """Stacked CycleGAN — vanilla CycleGAN that treats 2-channel input as stacked images.
 
 Unlike the fusion variant (cycle_gan / cycle_gan_fusion), this model does NOT use
-DualBranchResnetGenerator or CrossChannelFusion. It feeds the stacked 2-channel
-tensor directly into a standard ResnetGenerator, serving as an ablation baseline.
+SPIFGenerator or SPIFFusion. It feeds the stacked 2-channel tensor directly into a
+standard ResnetGenerator, serving as an ablation baseline.
 
 When input_nc=2, domain A is a (2, H, W) tensor and the generator is a standard
 ResnetGenerator(2→3) — no per-channel heads, no cross-modal attention.
@@ -19,7 +19,7 @@ class CycleGANStackModel(BaseModel):
     """Vanilla CycleGAN for stacked 2-channel input — ablation baseline.
 
     Generators are always standard ResnetGenerator regardless of input_nc.
-    No dual-branch heads, no CrossChannelFusion, no per-channel output heads.
+    No dual-branch heads, no SPIFFusion, no per-channel output heads.
     """
 
     @staticmethod

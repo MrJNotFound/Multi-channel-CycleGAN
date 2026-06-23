@@ -53,10 +53,10 @@ class TestModel(BaseModel):
         if not user_set_netG:
             if opt.input_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
                 n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
-                netG_type = f"dual_resnet_{n_blocks}"
+                netG_type = f"spif_{n_blocks}"
             elif opt.output_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
                 n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
-                netG_type = f"dual_output_resnet_{n_blocks}"
+                netG_type = f"spif_dual_{n_blocks}"
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
         # assigns the model to self.netG_[suffix] so that it can be loaded

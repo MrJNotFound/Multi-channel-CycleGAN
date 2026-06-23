@@ -142,10 +142,10 @@ if __name__ == "__main__":
 
             # 输出文件名
             if rename:
-                file_name = f"{idx:04d}.jpg"
+                file_name = f"{idx:04d}.png"
             else:
                 base_name = os.path.splitext(os.path.basename(img_path))[0]
-                file_name = f"{base_name}.jpg"
+                file_name = f"{base_name}.png"
 
             output_path = os.path.join(output_dir, file_name)
             ok = cv2.imwrite(output_path, img)

@@ -1,10 +1,10 @@
 """
-可视化 UTOM content loss 的中间结果：
+可视化 SPIF content loss 的中间结果：
 - 逐通道 Sobel 梯度幅值
 - 加权融合梯度（跨通道算术平均）
 - 低频分量（通道均值 + 高斯模糊）
 
-与 utom_model.py 中 grad_mag() / low_freq() 计算完全一致。
+与 spif_model.py 中 grad_mag() / low_freq() 计算完全一致。
 """
 
 import os
@@ -15,7 +15,7 @@ from tkinter import filedialog
 
 
 # ============================================================
-# 与 utom_model.py 等价的 numpy 实现
+# 与 spif_model.py 等价的 numpy 实现
 # ============================================================
 
 SOBEL_KX = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)

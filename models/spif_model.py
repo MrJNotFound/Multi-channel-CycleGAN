@@ -7,17 +7,24 @@ from . import networks
 import numpy as np
 
 
-class UTOMModel(BaseModel):
+class SPIFModel(BaseModel):
     """
-    UTOM (Unpaired Translation with Overlapping Modalities) model based on CycleGAN.
+    SPIF (Structure-Preserving Image Fusion) model based on CycleGAN.
 
     Extends CycleGAN with structure-preserving content loss computed in the
-    gradient domain via Sobel edge detection. Designed for dual-channel (BF + AF)
-    virtual H&E staining with a dedicated DualBranchResnetGenerator.
+    gradient domain via Sobel edge detection, and cross-channel feature fusion
+    for dual-channel input. Designed for virtual H&E staining from BF + AF.
 
     The model training requires '--dataset_mode dual_channel' dataset.
     By default, it uses a '--netG resnet_9blocks' ResNet generator,
     a '--netD basic' discriminator (PatchGAN), and LSGAN objective.
+
+    Core innovations:
+    1. Cross-channel feature fusion (SPIFFusion) — BF and AF features exchange
+       context via channel attention before merging.
+    2. Gradient-domain structure-preserving loss — Sobel edge matching ensures
+       tissue morphology is preserved during translation, with an optional
+       low-frequency anchor to prevent foreground/background inversion.
 
     CycleGAN paper: https://arxiv.org/pdf/1703.10593.pdf
     """
@@ -63,7 +70,7 @@ class UTOMModel(BaseModel):
         return parser
 
     def __init__(self, opt):
-        """Initialize the UTOM model.
+        """Initialize the SPIF model.
 
         Parameters:
             opt (Option class)-- stores all the experiment flags; needs to be a subclass of BaseOptions
@@ -94,14 +101,14 @@ class UTOMModel(BaseModel):
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
         netG_A_type = opt.netG
         if opt.input_nc == 2 and netG_A_type == "resnet_9blocks":
-            netG_A_type = "dual_resnet_9blocks"
+            netG_A_type = "spif_9blocks"
         elif opt.input_nc == 2 and netG_A_type == "resnet_6blocks":
-            netG_A_type = "dual_resnet_6blocks"
+            netG_A_type = "spif_6blocks"
         netG_B_type = opt.netG
         if opt.input_nc == 2 and netG_B_type == "resnet_9blocks":
-            netG_B_type = "dual_output_resnet_9blocks"
+            netG_B_type = "spif_dual_9blocks"
         elif opt.input_nc == 2 and netG_B_type == "resnet_6blocks":
-            netG_B_type = "dual_output_resnet_6blocks"
+            netG_B_type = "spif_dual_6blocks"
         self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_A_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, netG_B_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
@@ -234,7 +241,7 @@ class UTOMModel(BaseModel):
         inversion by anchoring broad intensity distributions — critical in early
         training when the generator has no absolute luminance reference.
 
-        Both terms decay exponentially from 25× to near zero over training.
+        Both terms decay exponentially from 15× to near zero over training.
         """
 
         def grad_mag(x):

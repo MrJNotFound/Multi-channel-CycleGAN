@@ -151,14 +151,14 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
     elif netG == "resnet_6blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
-    elif netG == "dual_resnet_9blocks":
-        net = DualBranchResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
-    elif netG == "dual_resnet_6blocks":
-        net = DualBranchResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
-    elif netG == "dual_output_resnet_9blocks":
-        net = DualOutputResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
-    elif netG == "dual_output_resnet_6blocks":
-        net = DualOutputResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == "spif_9blocks":
+        net = SPIFGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+    elif netG == "spif_6blocks":
+        net = SPIFGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == "spif_dual_9blocks":
+        net = SPIFDualGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+    elif netG == "spif_dual_6blocks":
+        net = SPIFDualGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
@@ -451,8 +451,8 @@ class ChannelAttention(nn.Module):
         return self.fc(x)
 
 
-class CrossChannelFusion(nn.Module):
-    """Fuses BF and AF features through cross-channel attention exchange.
+class SPIFFusion(nn.Module):
+    """SPIF cross-channel fusion: BF/AF features exchange context via attention.
 
     BF features are modulated by channel attention derived from AF context,
     and vice versa. The refined features are concatenated, projected, and
@@ -476,24 +476,24 @@ class CrossChannelFusion(nn.Module):
         return fused + (feat_bf + feat_af)
 
 
-class DualBranchResnetGenerator(nn.Module):
-    """ResNet generator with deeper encoder heads for BF and AF channels.
+class SPIFGenerator(nn.Module):
+    """SPIF generator with dual encoder heads for BF and AF channels.
 
     Each modality independently encodes through a 7×7 conv and one
-    downsampling stage before cross-channel fusion, giving the channel
-    attention richer semantic features to work with.
+    downsampling stage before SPIFFusion, giving the channel attention
+    richer semantic features to work with.
 
     Architecture:
-        BF (1,H,W) -> Head_BF (7×7 + Down) -> feat_BF @2ngf ─┐
-                                                              ├-> CCFusion -> Shared Backbone -> Output
-        AF (1,H,W) -> Head_AF (7×7 + Down) -> feat_AF @2ngf ─┘
+        BF (1,H,W) → Head_BF (7×7 + Down) → feat_BF @2ngf ─┐
+                                                              ├→ SPIFFusion → Shared Backbone → Output
+        AF (1,H,W) → Head_AF (7×7 + Down) → feat_AF @2ngf ─┘
 
     Only supports input_nc == 2 (one channel per modality).
     """
 
     def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d,
                  use_dropout=False, n_blocks=6, padding_type="reflect"):
-        assert input_nc == 2, f"DualBranchResnetGenerator requires input_nc=2, got {input_nc}"
+        assert input_nc == 2, f"SPIFGenerator requires input_nc=2, got {input_nc}"
         super().__init__()
 
         if isinstance(norm_layer, functools.partial):
@@ -522,7 +522,7 @@ class DualBranchResnetGenerator(nn.Module):
         )
 
         # Cross-channel fusion at ngf*2 (deeper features, richer semantics)
-        self.fusion = CrossChannelFusion(ngf * 2)
+        self.fusion = SPIFFusion(ngf * 2)
 
         # Shared backbone: one downsampling → ResBlocks → two upsamplings → output
         model = []
@@ -567,8 +567,8 @@ class DualBranchResnetGenerator(nn.Module):
         return self.backbone(fused)
 
 
-class DualOutputResnetGenerator(nn.Module):
-    """ResNet generator with dual output heads for separated BF/AF channels.
+class SPIFDualGenerator(nn.Module):
+    """SPIF dual-output generator for the reverse direction (B → A).
 
     Shares a standard ResNet backbone but splits the final convolution into
     two independent heads — one per output channel — so each modality gets
@@ -579,7 +579,7 @@ class DualOutputResnetGenerator(nn.Module):
 
     def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d,
                  use_dropout=False, n_blocks=6, padding_type="reflect"):
-        assert output_nc == 2, f"DualOutputResnetGenerator requires output_nc=2, got {output_nc}"
+        assert output_nc == 2, f"SPIFDualGenerator requires output_nc=2, got {output_nc}"
         super().__init__()
 
         if isinstance(norm_layer, functools.partial):

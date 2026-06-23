@@ -34,8 +34,8 @@ if __name__ == "__main__":
         sys.argv = [
             "train_dual.py",
             "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
-            "--name", "mouse_kidney_dual_utom_256_re4",
-            "--model", "utom",
+            "--name", "mouse_kidney_dual_spif_256_re4",
+            "--model", "spif",
             "--dataset_mode", "dual_channel",
             "--input_nc", "2",
             "--output_nc", "3",
