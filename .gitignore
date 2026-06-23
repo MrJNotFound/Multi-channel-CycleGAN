@@ -1,3 +1,17 @@
+# Python bytecode cache
+__pycache__/
+
+# AI agent configuration
+.claude/
+CLAUDE.md
+
+# IDE configuration
+.idea/
+
+# Paper drafts and references (personal research)
+paper/
+
+# Training outputs and datasets
 /checkpoints/
 /results/
 /datasets/
