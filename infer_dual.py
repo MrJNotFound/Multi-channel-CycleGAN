@@ -47,19 +47,18 @@ if __name__ == "__main__":
     sys.argv = [
         "infer_dual.py",
         "--dataroot", "C:/Users/30927/Desktop/Multi-layer-CycleGAN/datasets/mouse_kidney_SF_512",
-        "--name", "mouse_kidney_dual_utom_256_re3",
+        "--name", "mouse_kidney_dual_stack_256",
         "--model", "test",
         "--model_suffix", "_A",
         "--dataset_mode", "dual_channel",
         "--input_nc", "2",
         "--output_nc", "3",
-        # "--netG", "resnet_9blocks",  # explicitly set for stack model; comment out for fusion model
+        "--netG", "resnet_9blocks",  # explicitly set for stack model; comment out for fusion model
         "--no_dropout",
         "--preprocess", "none",
         "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\kidney",
         "--num_test", "10000",
         "--epoch", "latest",
-        ""
     ]
 
     opt = TestOptions().parse()  # get test options

@@ -38,7 +38,7 @@ if __name__ == "__main__":
     h0, w0 = first_img.shape[:2]
 
     # 设定显示窗口最大宽度
-    max_width = 700
+    max_width = 500
     scale = 1.0
     if w0 > max_width:
         scale = max_width / w0
