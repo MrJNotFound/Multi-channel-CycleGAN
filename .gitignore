@@ -15,3 +15,6 @@ paper/
 /checkpoints/
 /results/
 /datasets/
+
+# External tools
+tool/3D-stack-with-slicing-master/
