@@ -110,6 +110,212 @@ def rigid_registration(
         raise ValueError("不支持的图像维度")
     return registered
 
+
+def rigid_registration_matrix(
+        fixed_img,
+        moving_img,
+        n_matches=200,
+        scale_factor=0.2,
+        only_rigid=True
+):
+    """仅计算刚性配准的仿射矩阵，不执行 warp。
+
+    Returns:
+        mat_full: 2×3 仿射矩阵，或 None（特征点不足）
+        fixed_shape: (w, h) 固定图像尺寸
+    """
+    if fixed_img.ndim == 2:
+        fixed_gray = cv2.resize(fixed_img, (int(fixed_img.shape[1] * scale_factor), int(fixed_img.shape[0] * scale_factor)))
+        moving_gray = cv2.resize(moving_img, (int(moving_img.shape[1] * scale_factor), int(moving_img.shape[0] * scale_factor)))
+    elif fixed_img.ndim == 3:
+        fixed_gray = cv2.cvtColor(cv2.resize(fixed_img, (int(fixed_img.shape[1] * scale_factor), int(fixed_img.shape[0] * scale_factor))), cv2.COLOR_BGR2GRAY)
+        moving_gray = cv2.cvtColor(cv2.resize(moving_img, (int(moving_img.shape[1] * scale_factor), int(moving_img.shape[0] * scale_factor))), cv2.COLOR_BGR2GRAY)
+    else:
+        raise ValueError("不支持的图像维度")
+
+    detectors = _create_feature_detector()
+    kp1, des1, kp2, des2 = None, None, None, None
+    used_detector = None
+    norm_type = cv2.NORM_L2
+
+    for name, detector in detectors:
+        try:
+            kp1, des1 = detector.detectAndCompute(fixed_gray, None)
+            kp2, des2 = detector.detectAndCompute(moving_gray, None)
+            if des1 is not None and des2 is not None and len(kp1) >= 5 and len(kp2) >= 5:
+                used_detector = name
+                if name == "ORB":
+                    norm_type = cv2.NORM_HAMMING
+                else:
+                    norm_type = cv2.NORM_L2
+                break
+        except Exception:
+            continue
+
+    if used_detector is None:
+        print(f"  警告: 所有特征检测器均未能提取足够特征点")
+        return None, None
+
+    print(f"  使用特征检测器: {used_detector} (kp1={len(kp1)}, kp2={len(kp2)})")
+
+    if used_detector == "ORB":
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    else:
+        bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+    matches = bf.match(des1, des2)
+    matches = sorted(matches, key=lambda x: x.distance)
+    matches = matches[:n_matches]
+    if len(matches) < 5:
+        print(f"  警告: 匹配点不足 ({len(matches)} < 5)")
+        return None, None
+    print(f"  匹配点数量: {len(matches)}")
+
+    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+    mat_low, mask = cv2.estimateAffinePartial2D(pts2, pts1)
+    if only_rigid:
+        mat_low = remove_scale_from_affine(mat_low)
+    if mat_low is None:
+        return None, None
+    s = np.array([[1/scale_factor, 0, 0], [0, 1/scale_factor, 0], [0, 0, 1]])
+    s_ = np.array([[scale_factor, 0, 0], [0, scale_factor, 0], [0, 0, 1]])
+    mat_full = s @ np.vstack([mat_low, [0, 0, 1]]) @ s_
+    mat_full = mat_full[:2, :]
+    fixed_shape = (fixed_img.shape[1], fixed_img.shape[0])
+    return mat_full, fixed_shape
+
+
+def rigid_registration_apply(moving_img, mat_full, output_size):
+    """使用预计算的仿射矩阵对图像进行 warp。
+
+    Args:
+        moving_img: 待配准图像
+        mat_full: 2×3 仿射矩阵
+        output_size: (w, h) 输出尺寸
+    """
+    h, w = output_size[1], output_size[0]
+    if moving_img.ndim == 2:
+        return cv2.warpAffine(moving_img, mat_full, (w, h),
+                              flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=255)
+    elif moving_img.ndim == 3:
+        return cv2.warpAffine(moving_img, mat_full, (w, h),
+                              flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=[255, 255, 255])
+    else:
+        raise ValueError("不支持的图像维度")
+
+
+def elastic_registration_transform(
+        fixed,
+        moving,
+        mesh_size=4,
+        shrink_factors=None,
+        smoothing_sigmas=None,
+        optimizer_iterations=50,
+        optimizer_tol=1e-5,
+        optimizer_bounds=(-100, 100),
+        scale_factor=1.0,
+):
+    """仅计算弹性配准的 BSplineTransform，不执行重采样。
+
+    Args:
+        scale_factor: < 1.0 时先将图像缩小再配准以节省内存，
+                      返回的 transform 在缩小后的坐标空间。
+
+    Returns:
+        outTx: SimpleITK BSplineTransform
+        fixed_sitk: 固定图像的 SimpleITK 对象（用于后续 resample）
+        orig_shape: 原始固定图像尺寸 (h, w)，供 apply 时上采样回原尺寸
+    """
+    if shrink_factors is None:
+        shrink_factors = [5]
+    if smoothing_sigmas is None:
+        smoothing_sigmas = [1]
+    if isinstance(mesh_size, int):
+        mesh_size = [mesh_size] * 2
+
+    orig_h, orig_w = fixed.shape[:2]
+    if scale_factor < 1.0:
+        new_w = max(1, int(orig_w * scale_factor))
+        new_h = max(1, int(orig_h * scale_factor))
+        if fixed.ndim == 3:
+            fixed_small = cv2.resize(fixed, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            moving_small = cv2.resize(moving, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        else:
+            fixed_small = cv2.resize(fixed, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            moving_small = cv2.resize(moving, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    else:
+        fixed_small, moving_small = fixed, moving
+
+    if fixed_small.ndim == 2:
+        fixed_sitk = sitk.GetImageFromArray(fixed_small)
+        moving_sitk = sitk.GetImageFromArray(moving_small)
+    elif fixed_small.ndim == 3:
+        fixed_gray = cv2.cvtColor(fixed_small, cv2.COLOR_BGR2GRAY)
+        moving_gray = cv2.cvtColor(moving_small, cv2.COLOR_BGR2GRAY)
+        fixed_sitk = sitk.GetImageFromArray(fixed_gray)
+        moving_sitk = sitk.GetImageFromArray(moving_gray)
+    else:
+        raise ValueError("不支持的图像维度")
+
+    fixed_sitk = sitk.Cast(fixed_sitk, sitk.sitkFloat32)
+    moving_sitk = sitk.Cast(moving_sitk, sitk.sitkFloat32)
+
+    tx = sitk.BSplineTransformInitializer(fixed_sitk, mesh_size)
+    R = sitk.ImageRegistrationMethod()
+    lower_bound, upper_bound = optimizer_bounds
+    R.SetMetricAsMeanSquares()
+    R.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=optimizer_tol,
+                           numberOfIterations=optimizer_iterations,
+                           upperBound=upper_bound, lowerBound=lower_bound)
+    R.SetInitialTransform(tx, True)
+    R.SetInterpolator(sitk.sitkLinear)
+    R.SetShrinkFactorsPerLevel(shrink_factors)
+    R.SetSmoothingSigmasPerLevel(smoothing_sigmas)
+    outTx = R.Execute(fixed_sitk, moving_sitk)
+    return outTx, fixed_sitk, (orig_h, orig_w)
+
+
+def elastic_registration_apply(moving_img, fixed_sitk, outTx, output_size=None):
+    """使用预计算的 BSplineTransform 对图像进行重采样。
+
+    Args:
+        moving_img: 待配准图像（原始尺寸）
+        fixed_sitk: 固定图像的 SimpleITK 对象（用于确定输出空间）
+        outTx: 预计算的 BSplineTransform
+        output_size: (w, h) 若提供，输出上采样到该尺寸；
+                     若 transform 是在缩小图上算的，传入原图尺寸即可还原
+    """
+    fw, fh = fixed_sitk.GetSize()
+    mh, mw = moving_img.shape[:2]
+    if (mw, mh) != (fw, fh):
+        moving_small = cv2.resize(moving_img, (fw, fh), interpolation=cv2.INTER_AREA)
+    else:
+        moving_small = moving_img
+
+    if moving_small.ndim == 2:
+        moving_sitk = sitk.GetImageFromArray(moving_small)
+        moving_sitk = sitk.Cast(moving_sitk, sitk.sitkFloat32)
+        moved = sitk.Resample(moving_sitk, fixed_sitk, outTx,
+                              sitk.sitkLinear, 0, sitk.sitkFloat32)
+        result = sitk.GetArrayFromImage(moved).astype(np.uint8)
+    elif moving_small.ndim == 3:
+        moved_channels = []
+        for c in range(3):
+            moving_sitk = sitk.GetImageFromArray(moving_small[:, :, c].astype(np.float32))
+            moved = sitk.Resample(moving_sitk, fixed_sitk, outTx,
+                                  sitk.sitkLinear, 255, sitk.sitkFloat32)
+            moved_channels.append(sitk.GetArrayFromImage(moved).astype(np.uint8))
+        result = cv2.merge(moved_channels)
+    else:
+        raise ValueError("不支持的图像维度")
+
+    if output_size is not None:
+        ow, oh = output_size
+        if (result.shape[1], result.shape[0]) != (ow, oh):
+            result = cv2.resize(result, (ow, oh), interpolation=cv2.INTER_LANCZOS4)
+    return result
+
+
 def elastic_registration(
     fixed,
     moving,
@@ -118,17 +324,33 @@ def elastic_registration(
     smoothing_sigmas=None,
     optimizer_iterations=50,
     optimizer_tol=1e-5,
-    optimizer_bounds=(-100, 100)
+    optimizer_bounds=(-100, 100),
+    scale_factor=1.0,
 ):
+    """弹性配准（一步完成：缩放→计算变换→应用→还原尺寸）。
+
+    Args:
+        scale_factor: < 1.0 时先缩小再配准以节省内存，结果自动上采样回原尺寸。
+    """
     if shrink_factors is None:
         shrink_factors = [5]
     if smoothing_sigmas is None:
         smoothing_sigmas = [1]
     if isinstance(mesh_size, int):
         mesh_size = [mesh_size] * 2
-    if fixed.ndim == 2:
-        fixed_sitk = sitk.GetImageFromArray(fixed)
-        moving_sitk = sitk.GetImageFromArray(moving)
+
+    orig_h, orig_w = fixed.shape[:2]
+    if scale_factor < 1.0:
+        new_w = max(1, int(orig_w * scale_factor))
+        new_h = max(1, int(orig_h * scale_factor))
+        fixed_small = cv2.resize(fixed, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        moving_small = cv2.resize(moving, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    else:
+        fixed_small, moving_small = fixed, moving
+
+    if fixed_small.ndim == 2:
+        fixed_sitk = sitk.GetImageFromArray(fixed_small)
+        moving_sitk = sitk.GetImageFromArray(moving_small)
         fixed_sitk = sitk.Cast(fixed_sitk, sitk.sitkFloat32)
         moving_sitk = sitk.Cast(moving_sitk, sitk.sitkFloat32)
         tx = sitk.BSplineTransformInitializer(fixed_sitk, mesh_size)
@@ -150,9 +372,9 @@ def elastic_registration(
             sitk.sitkFloat32
         )
         elastic_registered = sitk.GetArrayFromImage(moved).astype(np.uint8)
-    elif fixed.ndim == 3:
-        fixed_gray = cv2.cvtColor(fixed, cv2.COLOR_BGR2GRAY)
-        moving_gray = cv2.cvtColor(moving, cv2.COLOR_BGR2GRAY)
+    elif fixed_small.ndim == 3:
+        fixed_gray = cv2.cvtColor(fixed_small, cv2.COLOR_BGR2GRAY)
+        moving_gray = cv2.cvtColor(moving_small, cv2.COLOR_BGR2GRAY)
         fixed_sitk = sitk.GetImageFromArray(fixed_gray)
         moving_sitk = sitk.GetImageFromArray(moving_gray)
         fixed_sitk = sitk.Cast(fixed_sitk, sitk.sitkFloat32)
@@ -170,7 +392,7 @@ def elastic_registration(
         moved_channels = []
         for c in range(3):
             moved = sitk.Resample(
-                sitk.GetImageFromArray(moving[:,:,c].astype(np.float32)),
+                sitk.GetImageFromArray(moving_small[:,:,c].astype(np.float32)),
                 fixed_sitk,
                 outTx,
                 sitk.sitkLinear,
@@ -181,6 +403,10 @@ def elastic_registration(
         elastic_registered = cv2.merge(moved_channels)
     else:
         raise ValueError("不支持的图像维度")
+
+    if scale_factor < 1.0:
+        elastic_registered = cv2.resize(
+            elastic_registered, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
     return elastic_registered
 
 def batch_register_images_anchor_subseq(

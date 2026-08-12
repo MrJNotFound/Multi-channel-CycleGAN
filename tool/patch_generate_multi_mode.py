@@ -234,14 +234,21 @@ def color_background_ratio(image_patch: Image.Image) -> float:
     return float(np.mean(bg_mask))
 
 
-def patch_is_accepted(primary_patch: Image.Image, mask_patch: Optional[Image.Image]) -> bool:
+def patch_is_accepted(primary_patch: Image.Image, mask_patch: Optional[Image.Image],
+                     secondary_patch: Optional[Image.Image] = None) -> bool:
     if mode == "mask":
         if mask_patch is None:
             return False
         return mask_background_ratio(mask_patch) <= max_bg_ratio
 
     if mode == "color":
-        return color_background_ratio(primary_patch) <= max_bg_ratio
+        if color_background_ratio(primary_patch) > max_bg_ratio:
+            return False
+        # 第二输入也做背景校验，确保配对的两个通道都不是背景
+        if secondary_patch is not None:
+            if color_background_ratio(secondary_patch) > max_bg_ratio:
+                return False
+        return True
 
     return True
 
@@ -296,7 +303,7 @@ def sample_from_item(
             secondary_patch = secondary_im.crop(box) if secondary_im is not None else None
             mask_patch = mask_im.crop(box) if mask_im is not None else None
 
-            if not patch_is_accepted(primary_patch, mask_patch):
+            if not patch_is_accepted(primary_patch, mask_patch, secondary_patch):
                 rejected_bg += 1
                 close_if_needed(primary_patch)
                 close_if_needed(secondary_patch)

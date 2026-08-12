@@ -5,9 +5,9 @@ from tkinter import filedialog
 from natsort import natsorted
 
 
-def convert_and_resize_images(input_dir, output_dir, scale=1.0, save_grayscale=False, rename=False):
+def convert_and_resize_images(input_dir, output_dir, scale=1.0, save_grayscale=False, rename=False, out_fmt="png"):
     """
-    将 input_dir 下所有图片（递归）转换为 PNG 并可缩放，输出到 output_dir。
+    将 input_dir 下所有图片（递归）转换并缩放，输出到 output_dir。
     支持 jpg, jpeg, bmp, tiff, gif, webp, png 格式。
     输出文件名按自然排序，命名为 0001、0002、0003……
 
@@ -16,6 +16,8 @@ def convert_and_resize_images(input_dir, output_dir, scale=1.0, save_grayscale=F
       - output_dir: 输出目录
       - scale: 缩放比例（浮点数），例如 0.5、1.0、2.0
       - save_grayscale: 是否保存为灰度图（布尔值，默认False，即保存为彩色）
+      - rename: 是否重命名为序号
+      - out_fmt: 输出图像格式 ("png", "jpg", "bmp", "tiff", "webp")
     """
     img_exts = ('.jpg', '.jpeg', '.bmp', '.tiff', '.gif', '.webp', '.png')
 
@@ -52,12 +54,12 @@ def convert_and_resize_images(input_dir, output_dir, scale=1.0, save_grayscale=F
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
                 else:
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # 如果rename=False，使用原始文件名（但改扩展名为png）；如果rename=True，使用0001.png、0002.png……
+        # 如果rename=False，使用原始文件名（扩展名改为输出格式）；如果rename=True，使用0001、0002……
         if rename:
-            file_name = f"{idx:04d}.png"
+            file_name = f"{idx:04d}.{out_fmt}"
         else:
             base_name = os.path.splitext(os.path.basename(img_path))[0]
-            file_name = f"{base_name}.jpg"
+            file_name = f"{base_name}.{out_fmt}"
         output_path = os.path.join(output_dir, file_name)
         cv2.imwrite(output_path, img)
         print(f"保存: {output_path}")
@@ -89,30 +91,43 @@ if __name__ == "__main__":
     scale_var = tk.DoubleVar(value=0.5)
     gray_var = tk.BooleanVar(value=False)
     rename_var = tk.BooleanVar(value=False)
+    fmt_var = tk.StringVar(value="png")
 
     opt_win = tk.Toplevel(root)
     opt_win.title("参数设置")
     opt_win.resizable(False, False)
 
-    tk.Label(opt_win, text="缩放比例 (0.1~2.0)：", font=("", 11)).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 2))
-    tk.Scale(opt_win, from_=0.1, to=2.0, resolution=0.1, orient="horizontal",
-             variable=scale_var, length=200).grid(row=1, column=0, padx=15, pady=(0, 8))
+    tk.Label(opt_win, text="缩放比例：", font=("", 11)).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 2))
+    scale_frame = tk.Frame(opt_win)
+    scale_frame.grid(row=1, column=0, padx=15, pady=(0, 8), sticky="w")
+    tk.Entry(scale_frame, textvariable=scale_var, width=8).pack(side="left")
+    tk.Label(scale_frame, text="  (如 0.375, 1.0, 2.0)", font=("", 9), fg="gray").pack(side="left")
 
     tk.Checkbutton(opt_win, text="保存为灰度图", variable=gray_var, font=("", 11)).grid(row=2, column=0, sticky="w", padx=15, pady=2)
     tk.Checkbutton(opt_win, text="重命名为序号 (0001, 0002...)", variable=rename_var, font=("", 11)).grid(row=3, column=0, sticky="w", padx=15, pady=2)
 
-    tk.Button(opt_win, text="开始处理", command=opt_win.destroy, width=12).grid(row=4, column=0, pady=(10, 15), padx=15)
+    tk.Label(opt_win, text="输出格式：", font=("", 11)).grid(row=4, column=0, sticky="w", padx=15, pady=(8, 2))
+    tk.OptionMenu(opt_win, fmt_var, "png", "jpg", "bmp", "tiff", "webp").grid(row=5, column=0, padx=15, pady=(0, 8))
+
+    tk.Button(opt_win, text="开始处理", command=opt_win.destroy, width=12).grid(row=6, column=0, pady=(10, 15), padx=15)
 
     opt_win.grab_set()
     root.wait_window(opt_win)
     root.destroy()
 
-    scale = scale_var.get()
+    try:
+        scale = float(scale_var.get())
+        if scale <= 0:
+            raise ValueError
+    except (ValueError, tk.TclError):
+        print(f"缩放比例输入无效: '{scale_var.get()}'，请输入正数（如 0.375, 1.0）")
+        exit(1)
     save_grayscale = gray_var.get()
     rename = rename_var.get()
+    out_fmt = fmt_var.get()
 
     print(f"输出目录: {output_dir}")
-    print(f"缩放: {scale}x | 灰度: {save_grayscale} | 重命名: {rename}")
+    print(f"缩放: {scale}x | 灰度: {save_grayscale} | 重命名: {rename} | 格式: {out_fmt}")
 
     # 按自然排序
     img_paths = natsorted(list(img_paths))
@@ -142,10 +157,10 @@ if __name__ == "__main__":
 
             # 输出文件名
             if rename:
-                file_name = f"{idx:04d}.png"
+                file_name = f"{idx:04d}.{out_fmt}"
             else:
                 base_name = os.path.splitext(os.path.basename(img_path))[0]
-                file_name = f"{base_name}.png"
+                file_name = f"{base_name}.{out_fmt}"
 
             output_path = os.path.join(output_dir, file_name)
             ok = cv2.imwrite(output_path, img)

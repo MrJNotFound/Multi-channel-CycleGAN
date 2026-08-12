@@ -33,8 +33,8 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         sys.argv = [
             "train_dual.py",
-            "--dataroot", "./datasets/mouse_kidney_dual_BF_AF_HE_256",
-            "--name", "mouse_kidney_dual_spif_256_re4",
+            "--dataroot", "./datasets/train_cancer_dual_512",
+            "--name", "cancer_dual_spif_256",
             "--model", "spif",
             "--dataset_mode", "dual_channel",
             "--input_nc", "2",

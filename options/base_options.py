@@ -23,6 +23,7 @@ class BaseOptions:
         parser.add_argument("--dataroot", required=True, help="path to images (should have subfolders trainA, trainB, valA, valB, etc)")
         parser.add_argument("--name", type=str, default="experiment_name", help="name of the experiment. It decides where to store samples and models")
         parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints", help="models are saved here")
+        parser.add_argument("--gpu_ids", type=str, default="-1", help="gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU")
         # model parameters
         parser.add_argument("--model", type=str, default="cycle_gan", help="chooses which model to use. [cycle_gan | pix2pix | test | colorization]")
         parser.add_argument("--input_nc", type=int, default=3, help="# of input image channels: 3 for RGB and 1 for grayscale")
@@ -33,6 +34,12 @@ class BaseOptions:
         parser.add_argument("--netG", type=str, default="resnet_9blocks", help="specify generator architecture [resnet_9blocks | resnet_6blocks | unet_256 | unet_128]")
         parser.add_argument("--n_layers_D", type=int, default=3, help="only used if netD==n_layers")
         parser.add_argument("--norm", type=str, default="instance", help="instance normalization or batch normalization [instance | batch | none | syncbatch]")
+        parser.add_argument("--normG", type=str, default=None, help="normalization for generator (if None, falls back to --norm). CUT compatibility.")
+        parser.add_argument("--normD", type=str, default=None, help="normalization for discriminator (if None, falls back to --norm). CUT compatibility.")
+        parser.add_argument("--no_antialias", action="store_true", help="if specified, use stride-2 convs instead of antialiased-downsampling (CUT)")
+        parser.add_argument("--no_antialias_up", action="store_true", help="if specified, use [upconv] instead of [antialiased upconv] (CUT)")
+        parser.add_argument("--trainA_normalize", type=int, default=255, help="normalization factor for domain A images (255=8bit, 65535=16bit). UTOM compatibility.")
+        parser.add_argument("--trainB_normalize", type=int, default=255, help="normalization factor for domain B images (255=8bit, 65535=16bit). UTOM compatibility.")
         parser.add_argument("--init_type", type=str, default="normal", help="network initialization [normal | xavier | kaiming | orthogonal]")
         parser.add_argument("--init_gain", type=float, default=0.02, help="scaling factor for normal, xavier and orthogonal.")
         parser.add_argument("--no_dropout", action="store_true", help="no dropout for the generator")
@@ -121,6 +128,17 @@ class BaseOptions:
         if opt.suffix:
             suffix = ("_" + opt.suffix.format(**vars(opt))) if opt.suffix != "" else ""
             opt.name = opt.name + suffix
+
+        # Parse gpu_ids string -> list (for CUT/UTOM backward compat)
+        str_ids = opt.gpu_ids.split(",")
+        opt.gpu_ids = []
+        for str_id in str_ids:
+            try:
+                id = int(str_id)
+                if id >= 0:
+                    opt.gpu_ids.append(id)
+            except ValueError:
+                pass
 
         self.print_options(opt)
         self.opt = opt

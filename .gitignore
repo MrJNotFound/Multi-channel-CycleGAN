@@ -18,3 +18,37 @@ paper/
 
 # External tools
 tool/3D-stack-with-slicing-master/
+
+# ── Non-SPIF implementations (comparative methods, not part of SPIF release) ──
+
+# UTOM
+models/utom_model.py
+models/utom_stack_model.py
+train_utom_bf.py
+train_utom_af.py
+train_utom_stack.py
+infer_utom.py
+
+# CUT
+models/cut_model.py
+models/cut_stack_model.py
+models/sincut_model.py
+models/patchnce.py
+train_cut_bf.py
+train_cut_af.py
+train_cut_stack.py
+infer_cut.py
+
+# Other CycleGAN variants
+models/cycle_gan_stack_model.py
+models/cycle_gan_fusion_model.py
+models/colorization_model.py
+models/pix2pix_model.py
+models/sobel_preview.py
+
+# Non-SPIF training / inference
+train_single.py
+infer_single.py
+
+# Experiment notes (contains non-SPIF comparisons)
+对比实验设计.md

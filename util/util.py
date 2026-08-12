@@ -1,6 +1,7 @@
 """This module contains simple helper functions"""
 
 from __future__ import print_function
+import argparse
 import torch
 import numpy as np
 from PIL import Image
@@ -130,3 +131,23 @@ def mkdir(path):
         path (str) -- a single directory path
     """
     Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def str2bool(v):
+    """Convert string to boolean for argparse (CUT compatibility)."""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+def copyconf(default_opt, **kwargs):
+    """Copy default options and override with kwargs (CUT fine-tuning compatibility)."""
+    conf = argparse.Namespace(**vars(default_opt))
+    for key in kwargs:
+        setattr(conf, key, kwargs[key])
+    return conf

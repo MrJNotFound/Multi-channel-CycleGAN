@@ -62,6 +62,9 @@ class SPIFModel(BaseModel):
             parser.add_argument("--lambda_low_freq", type=float, default=0.5,
                                 help="weight for low-frequency intensity term in content loss "
                                      "(prevents foreground/background inversion in early training)")
+            parser.add_argument("--lambda_content", type=float, default=1.0,
+                                help="overall weight for SPIF content loss. Set to 0 to disable "
+                                     "the entire gradient-domain + low-freq loss (useful for fine-tuning)")
             parser.add_argument("--grad_channel_weights", type=float, nargs="+", default=None,
                                 help="per-channel weights for gradient fusion (arithmetic mean). "
                                      "e.g. '--grad_channel_weights 0.5 0.5' for equal weighting. "
@@ -129,6 +132,7 @@ class SPIFModel(BaseModel):
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
             self.lambda_low_freq = opt.lambda_low_freq
+            self.lambda_content = opt.lambda_content
             # Normalize channel weights to sum=1; default to equal weights
             if opt.grad_channel_weights is not None:
                 w = torch.tensor(opt.grad_channel_weights, dtype=torch.float32)
@@ -316,7 +320,7 @@ class SPIFModel(BaseModel):
         low_loss_B = self.criterionCycle(low_fake_A, low_real_B)
 
         rate = 15 * np.exp(-(self.opt.counter / self.opt.data_size))
-        return rate * (grad_loss_A + grad_loss_B + self.lambda_low_freq * (low_loss_A + low_loss_B))
+        return rate * self.lambda_content * (grad_loss_A + grad_loss_B + self.lambda_low_freq * (low_loss_A + low_loss_B))
 
 
     def optimize_parameters(self):

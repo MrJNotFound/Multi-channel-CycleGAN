@@ -46,8 +46,8 @@ if __name__ == "__main__":
 
     sys.argv = [
         "infer_dual.py",
-        "--dataroot", "C:/Users/30927/Desktop/Multi-layer-CycleGAN/datasets/no_overlap",
-        "--name", "mouse_kidney_dual_utom_256_re4",
+        "--dataroot", "./datasets/test_validation_dual_BF_AF_HE_512",
+        "--name", "mouse_kidney_dual_spif_256",
         "--model", "test",
         "--model_suffix", "_A",
         "--dataset_mode", "dual_channel",
@@ -56,8 +56,8 @@ if __name__ == "__main__":
         # "--netG", "resnet_9blocks",  # explicitly set for stack model; comment out for fusion model
         "--no_dropout",
         "--preprocess", "none",
-        "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\kidney_no_overlap",
-        "--num_test", "10000",
+        "--results_dir", r"C:\Users\30927\Desktop\img_histology\virtual_staining_validation\dewax\spif",
+        "--num_test", "20000",
         "--epoch", "latest",
     ]
 

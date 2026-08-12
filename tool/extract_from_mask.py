@@ -1,10 +1,11 @@
 """
-基于 Mask 抠图：图像居中裁剪到掩膜尺寸 → 保留前景、背景置白。
+基于 Mask 抠图（多虚拟染色共享 Mask）
+------------------------------------
+输入 1 个 mask 文件夹 + 多个图像文件夹（同一内容的不同虚拟染色），
+用相同的 mask 对各图像文件夹分别抠图，输出到以图像文件夹命名的子文件夹中。
 
 用法：
     python tool/extract_from_mask.py
-
-尺寸不一致时：掩膜不动（基准），图像居中裁剪掉多余部分，不缩放。
 """
 
 import os
@@ -16,11 +17,9 @@ from natsort import natsorted
 
 
 def _crop_img_to_mask(img, mask):
-    """图像比掩膜大时，从原点方向裁剪图像以匹配掩膜尺寸。
+    """图像比掩膜大时，从左上角裁掉多余部分以匹配掩膜尺寸。
 
-    滑动窗口在 x+ / y+ 方向扩张，多余部分在右侧和底部，
-    因此保留左上角 (0,0) → (mask_w, mask_h)。
-    掩膜不动（是基准）。
+    掩膜是基准（不动），图像保留 (0,0) → (mask_w, mask_h)。
     """
     h_img, w_img = img.shape[:2]
     h_msk, w_msk = mask.shape[:2]
@@ -41,7 +40,7 @@ def apply_mask(img_path, mask_path, out_path, thresh=128):
     if mask is None:
         raise FileNotFoundError(f"读取 mask 失败: {mask_path}")
 
-    # 图像居中裁剪到掩膜尺寸（掩膜不动）
+    # 图像裁剪对齐到掩膜尺寸
     img = _crop_img_to_mask(img, mask)
 
     if mask.ndim == 3:
@@ -62,89 +61,59 @@ def apply_mask(img_path, mask_path, out_path, thresh=128):
     return int(fg.sum()), fg.size
 
 
-# ============================================================
 if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()
 
-    # 0. 选择模式
-    mode_var = tk.StringVar(value="多对多")
-    mode_win = tk.Toplevel(root)
-    mode_win.title("选择模式")
-    mode_win.resizable(False, False)
-    tk.Label(mode_win, text="请选择处理模式：", font=("", 12)).pack(padx=20, pady=(15, 5))
-    for text, val in [
-        ("一对一：一张图像 + 一张 Mask", "一对一"),
-        ("多对多：多选图像与 Mask，按排序一一对应", "多对多"),
-    ]:
-        tk.Radiobutton(mode_win, text=text, variable=mode_var, value=val,
-                       font=("", 11)).pack(anchor="w", padx=20, pady=3)
-    tk.Button(mode_win, text="下一步", command=mode_win.destroy, width=12).pack(pady=(10, 15))
-    mode_win.grab_set()
-    root.wait_window(mode_win)
+    # ===== Step 1: 选择 Mask 文件夹 =====
+    mask_dir = filedialog.askdirectory(title="选择 Mask 文件夹")
+    if not mask_dir:
+        print("未选择 Mask 文件夹，退出。")
+        root.destroy()
+        exit()
+    print(f"Mask 文件夹: {mask_dir}")
 
-    mode = mode_var.get()
+    # ===== Step 2: 选择图像父文件夹（自动递归子文件夹） =====
+    img_parent = filedialog.askdirectory(
+        title="选择图像父文件夹（其下所有子文件夹将作为不同虚拟染色的图像源）"
+    )
+    if not img_parent:
+        print("未选择图像文件夹，退出。")
+        root.destroy()
+        exit()
 
-    # 1. 选择图像和 Mask
-    img_paths = []
-    mask_paths = []
-    out_dir = ""
-    out_path_single = None
+    # 自动收集所有直接子文件夹
+    img_parent = os.path.abspath(img_parent)
+    img_dirs = []
+    for name in sorted(os.listdir(img_parent)):
+        full = os.path.join(img_parent, name)
+        if os.path.isdir(full):
+            img_dirs.append(full)
+    if not img_dirs:
+        print(f"父文件夹下没有子文件夹，将父文件夹本身作为唯一图像源。")
+        img_dirs = [img_parent]
+    for i, d in enumerate(img_dirs):
+        print(f"图像文件夹 {i + 1}: {os.path.basename(d)}")
 
-    if mode == "一对一":
-        ip = filedialog.askopenfilename(
-            title="选择待抠图图像",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
-        )
-        if not ip: print("未选择图像，退出。"); root.destroy(); exit()
-        mp = filedialog.askopenfilename(
-            title="选择 Mask 图像",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
-        )
-        if not mp: print("未选择 Mask，退出。"); root.destroy(); exit()
-        op = filedialog.asksaveasfilename(
-            title="保存抠图结果",
-            defaultextension=".png",
-            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("BMP", "*.bmp")],
-        )
-        if not op: print("未选择输出路径，退出。"); root.destroy(); exit()
-        img_paths = [ip]
-        mask_paths = [mp]
-        out_dir = os.path.dirname(op)
-        out_path_single = op
-    else:
-        raw_imgs = filedialog.askopenfilenames(
-            title="选择待抠图图像（可多选）",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
-        )
-        if not raw_imgs: print("未选择图像，退出。"); root.destroy(); exit()
-        raw_masks = filedialog.askopenfilenames(
-            title="选择 Mask 图像（可多选）",
-            filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
-        )
-        if not raw_masks: print("未选择 Mask，退出。"); root.destroy(); exit()
-        out_dir = filedialog.askdirectory(title="选择输出文件夹")
-        if not out_dir: print("未选择输出文件夹，退出。"); root.destroy(); exit()
+    print(f"\n共 {len(img_dirs)} 个图像文件夹。")
 
-        img_paths = natsorted(list(raw_imgs))
-        mask_paths = natsorted(list(raw_masks))
+    # ===== Step 3: 选择输出根目录 =====
+    out_root = filedialog.askdirectory(title="选择输出根目录（将为每个图像文件夹创建子文件夹）")
+    if not out_root:
+        print("未选择输出目录，退出。")
+        root.destroy()
+        exit()
+    print(f"输出根目录: {out_root}")
 
-        n_img = len(img_paths)
-        n_mask = len(mask_paths)
-        n = min(n_img, n_mask)
-        if n_img != n_mask:
-            messagebox.showwarning("数量不一致",
-                f"图像 {n_img} 张，Mask {n_mask} 张。\n按排序取前 {n} 对处理，多余的将被忽略。")
-        img_paths = img_paths[:n]
-        mask_paths = mask_paths[:n]
-
-    # 2. 阈值设置
+    # ===== Step 4: 阈值设置 =====
     thresh_var = tk.IntVar(value=128)
     param_win = tk.Toplevel(root)
     param_win.title("参数设置")
     param_win.resizable(False, False)
-    tk.Label(param_win, text="Mask 阈值 (>= 该值视为前景)：", font=("", 11)).pack(padx=15, pady=(15, 3))
-    tk.Scale(param_win, from_=0, to=255, orient="horizontal", variable=thresh_var, length=200).pack(padx=15)
+    tk.Label(param_win, text="Mask 阈值 (>= 该值视为前景)：", font=("", 11)).pack(
+        padx=15, pady=(15, 3))
+    tk.Scale(param_win, from_=0, to=255, orient="horizontal",
+             variable=thresh_var, length=200).pack(padx=15)
     tk.Label(param_win, textvariable=thresh_var, font=("", 10, "bold")).pack(pady=(0, 5))
     tk.Button(param_win, text="开始抠图", command=param_win.destroy, width=12).pack(pady=(5, 15))
     param_win.grab_set()
@@ -152,29 +121,73 @@ if __name__ == "__main__":
     root.destroy()
 
     thresh = thresh_var.get()
+    print(f"阈值: {thresh}\n")
 
-    print(f"模式: {mode}")
-    print(f"阈值: {thresh}")
-    print(f"输出目录: {out_dir}")
-    if mode == "一对一":
-        print(f"图像: {img_paths[0]}")
-        print(f"Mask: {mask_paths[0]}")
-    else:
-        print(f"配对数量: {len(img_paths)} 对")
-    print()
+    # ===== Step 5: 扫描 Mask 文件 =====
+    mask_root = os.path.abspath(mask_dir)
+    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+    mask_files = []
+    for f in os.listdir(mask_root):
+        if os.path.splitext(f)[1].lower() in exts:
+            mask_files.append(f)
+    mask_files = natsorted(mask_files)
+    if not mask_files:
+        print("Mask 文件夹中没有找到图像文件，退出。")
+        exit()
+    print(f"Mask 文件: {len(mask_files)} 个")
 
-    # 3. 处理
-    count = 0
-    for i, (img_p, mask_p) in enumerate(zip(img_paths, mask_paths), 1):
-        try:
-            base = os.path.splitext(os.path.basename(img_p))[0]
-            out_p = out_path_single if mode == "一对一" else os.path.join(out_dir, f"{base}_extracted.png")
+    # ===== Step 6: 逐图像文件夹处理 =====
+    for d_idx, img_dir in enumerate(img_dirs):
+        img_root = os.path.abspath(img_dir)
+        folder_name = os.path.basename(img_dir.rstrip(os.sep).rstrip("/"))
+        out_dir = os.path.join(out_root, folder_name)
+        os.makedirs(out_dir, exist_ok=True)
 
-            fg_px, total = apply_mask(img_p, mask_p, out_p, thresh)
-            print(f"[{i}/{len(img_paths)}] {os.path.basename(img_p)} -> {os.path.basename(out_p)}  "
-                  f"(FG: {fg_px}/{total}, {100*fg_px/total:.1f}%)")
-            count += 1
-        except Exception as e:
-            print(f"[{i}/{len(img_paths)}] 失败 [{img_p}]: {e}")
+        print(f"\n{'=' * 50}")
+        print(f"图像文件夹 [{d_idx + 1}/{len(img_dirs)}]: {folder_name}")
+        print(f"输出到: {out_dir}")
+        print(f"{'=' * 50}")
 
-    print(f"\n完成！共处理 {count}/{len(img_paths)} 张。")
+        # 扫描图像文件夹，按文件名自然排序
+        img_list = []
+        for f in os.listdir(img_root):
+            if os.path.splitext(f)[1].lower() in exts:
+                img_list.append(f)
+        img_list = natsorted(img_list)
+
+        if not img_list:
+            print(f"  ⚠ 该文件夹无图像，跳过。")
+            continue
+
+        # 按排序一一配对（数量不一致时取较小值并警告）
+        n_mask = len(mask_files)
+        n_img = len(img_list)
+        n = min(n_mask, n_img)
+        if n_mask != n_img:
+            print(f"  ⚠ Mask {n_mask} 张，图像 {n_img} 张，按排序取前 {n} 对。")
+
+        print(f"  配对: {n} 对，处理中...")
+
+        count = 0
+        for i in range(n):
+            try:
+                img_name = img_list[i]
+                mask_name = mask_files[i]
+                img_p = os.path.join(img_root, img_name)
+                mask_p = os.path.join(mask_root, mask_name)
+                # 输出名用图像的原始文件名
+                out_name = f"{os.path.splitext(img_name)[0]}_extracted.png"
+                out_p = os.path.join(out_dir, out_name)
+
+                fg_px, total = apply_mask(img_p, mask_p, out_p, thresh)
+                print(f"  [{i + 1}/{n}] {img_name} ← {mask_name}  "
+                      f"(FG: {fg_px}/{total}, {100 * fg_px / total:.1f}%)")
+                count += 1
+            except Exception as e:
+                print(f"  [{i + 1}/{n}] 失败 [{img_name}]: {e}")
+
+        print(f"  完成: {count}/{n} 张 → {out_dir}")
+
+    print(f"\n{'=' * 50}")
+    print(f"全部完成！共 {len(img_dirs)} 个图像文件夹，输出至: {out_root}")
+    print(f"{'=' * 50}")

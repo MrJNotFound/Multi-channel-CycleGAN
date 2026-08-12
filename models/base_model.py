@@ -35,6 +35,7 @@ class BaseModel(ABC):
         self.isTrain = opt.isTrain
         self.save_dir = Path(opt.checkpoints_dir) / opt.name  # save all the checkpoints to save_dir
         self.device = opt.device
+        self.gpu_ids = opt.gpu_ids  # for backward compat with CUT/UTOM model APIs
         # with [scale_width], input images might have different sizes, which hurts the performance of cudnn.benchmark.
         if opt.preprocess != "scale_width":
             torch.backends.cudnn.benchmark = True
@@ -145,6 +146,22 @@ class BaseModel(ABC):
         with torch.no_grad():
             self.forward()
             self.compute_visuals()
+
+    def data_dependent_initialize(self, data):
+        """Hook for models that need a real data batch before initialization.
+
+        CUT (cut_model.py) uses this to lazily create netF after seeing the
+        feature dimensions from the first real forward pass.
+        """
+        pass
+
+    def parallelize(self):
+        """Wrap models in DataParallel (legacy single-machine multi-GPU).
+
+        Our DDP setup handles distribution via DistributedDataParallel in
+        setup(), so this is a no-op. Exists for CUT model API compatibility.
+        """
+        pass
 
     def compute_visuals(self):
         """Calculate additional output images for visdom and HTML visualization"""
