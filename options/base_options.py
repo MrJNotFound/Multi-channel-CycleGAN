@@ -2,8 +2,6 @@ import argparse
 from pathlib import Path
 from util import util
 import torch
-import models
-import data
 
 
 class BaseOptions:
@@ -42,7 +40,17 @@ class BaseOptions:
         parser.add_argument("--trainB_normalize", type=int, default=255, help="normalization factor for domain B images (255=8bit, 65535=16bit). UTOM compatibility.")
         parser.add_argument("--init_type", type=str, default="normal", help="network initialization [normal | xavier | kaiming | orthogonal]")
         parser.add_argument("--init_gain", type=float, default=0.02, help="scaling factor for normal, xavier and orthogonal.")
-        parser.add_argument("--no_dropout", action="store_true", help="no dropout for the generator")
+        parser.add_argument(
+            "--no_dropout",
+            type=util.str2bool,
+            nargs="?",
+            const=True,
+            default=False,
+            help=(
+                "disable generator dropout; accepts an explicit True/False "
+                "so module defaults can also be overridden"
+            ),
+        )
         # dataset parameters
         parser.add_argument("--dataset_mode", type=str, default="unaligned", help="chooses how datasets are loaded. [unaligned | aligned | single | colorization]")
         parser.add_argument("--direction", type=str, default="AtoB", help="AtoB or BtoA")
@@ -63,6 +71,8 @@ class BaseOptions:
         # wandb parameters
         parser.add_argument("--use_wandb", action="store_true", help="if specified, then init wandb logging")
         parser.add_argument("--wandb_project_name", type=str, default="CycleGAN-and-pix2pix", help="specify wandb project name")
+        parser.add_argument("--gui_events", action="store_true",
+                            help="emit machine-readable progress events for the desktop UI")
         self.initialized = True
         return parser
 
@@ -72,6 +82,13 @@ class BaseOptions:
         These options are defined in the <modify_commandline_options> function
         in model and dataset classes.
         """
+        # Plugin imports are lazy so lightweight tooling (such as the desktop
+        # configuration UI) can inspect common options before image backends
+        # like torchvision are available. Normal training still imports both
+        # plugin packages here before parsing a runnable configuration.
+        import models
+        import data
+
         if not self.initialized:  # check if it has been initialized
             parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
             parser = self.initialize(parser)
@@ -92,7 +109,12 @@ class BaseOptions:
 
         # save and return the parser
         self.parser = parser
-        return parser.parse_args()
+        opt = parser.parse_args()
+        name = getattr(opt, "source_model", "") if opt.model == "test" else opt.model
+        errors = models.composition_errors(name, vars(opt))
+        if errors:
+            parser.error("\n".join(errors))
+        return opt
 
     def print_options(self, opt):
         """Print and save options

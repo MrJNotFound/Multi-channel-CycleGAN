@@ -1,10 +1,11 @@
 """
 可视化 SPIF content loss 的中间结果：
 - 逐通道 Sobel 梯度幅值
-- 加权融合梯度（跨通道算术平均）
-- 低频分量（通道均值 + 高斯模糊）
+- 原始分辨率下、未进行逐图 RMS 归一化的加权融合梯度
+- BF/AF 通道均值的 Gaussian 低频图、8×8 归一化粗图和强度相关性
 
-与 spif_model.py 中 grad_mag() / low_freq() 计算完全一致。
+对应 spif_model.py 中 FineStructureGradientLoss 和
+CoarseIntensityDistributionLoss 的计算方式。
 """
 
 import os
@@ -18,19 +19,28 @@ from tkinter import filedialog
 # 与 spif_model.py 等价的 numpy 实现
 # ============================================================
 
-SOBEL_KX = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
-SOBEL_KY = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
+SOBEL_KX = np.array(
+    [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32
+) / 8.0
+SOBEL_KY = np.array(
+    [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32
+) / 8.0
+EPS = 1e-6
 
 
 def _sobel_channel(x: np.ndarray) -> np.ndarray:
-    """单通道 Sobel 梯度幅值: sqrt(gx^2 + gy^2 + 1e-6)."""
-    gx = cv2.filter2D(x, cv2.CV_32F, SOBEL_KX)
-    gy = cv2.filter2D(x, cv2.CV_32F, SOBEL_KY)
-    return np.sqrt(gx ** 2 + gy ** 2 + 1e-6)
+    """使用 reflect-101 padding 的单通道 Sobel 梯度幅值。"""
+    gx = cv2.filter2D(
+        x, cv2.CV_32F, SOBEL_KX, borderType=cv2.BORDER_REFLECT_101
+    )
+    gy = cv2.filter2D(
+        x, cv2.CV_32F, SOBEL_KY, borderType=cv2.BORDER_REFLECT_101
+    )
+    return np.sqrt(gx ** 2 + gy ** 2 + EPS ** 2) - EPS
 
 
 def grad_mag(x: np.ndarray, weights=None) -> np.ndarray:
-    """逐通道 Sobel 梯度幅值 → 加权算术平均融合。
+    """逐通道 Sobel 梯度幅值 → 加权融合，不做逐图归一化。
 
     x: (H, W, C) 或 (H, W)  [值域任意，通常 [-1,1] 或 [0,255]]
     weights: 可选，长度=C 的权重列表，默认等权
@@ -46,9 +56,6 @@ def grad_mag(x: np.ndarray, weights=None) -> np.ndarray:
 
     stacked = np.stack(grads, axis=-1)  # (H, W, C)
 
-    if C == 1:
-        return stacked[:, :, 0]
-
     # 加权算术平均
     if weights is None:
         w = np.ones(C, dtype=np.float32) / C
@@ -57,28 +64,42 @@ def grad_mag(x: np.ndarray, weights=None) -> np.ndarray:
         w = w / w.sum()
     w = w.reshape(1, 1, C)
 
-    return np.sum(stacked * w, axis=-1)  # (H, W)
+    return np.sum(stacked * w, axis=-1)
 
 
-def low_freq(x: np.ndarray) -> np.ndarray:
-    """通道均值 + 高斯模糊 (radius=10, sigma=5.0, kernel=21×21)。
-
-    x: (H, W, C) 或 (H, W)
-    返回: (H, W) 低频图
-    """
+def coarse_intensity_map(x: np.ndarray, weights=None, pool_size=8):
+    """返回通道均值 Gaussian 图和 RMS 归一化后的粗网格。"""
     if x.ndim == 2:
-        x_mean = x
+        intensity = x
     else:
-        x_mean = np.mean(x, axis=2)  # channel mean
+        channels = x.shape[2]
+        if weights is None:
+            weights = np.ones(channels, dtype=np.float32) / channels
+        else:
+            weights = np.asarray(weights, dtype=np.float32)
+            weights = weights / weights.sum()
+        intensity = np.sum(x * weights.reshape(1, 1, channels), axis=2)
+    low = cv2.GaussianBlur(
+        intensity,
+        (21, 21),
+        sigmaX=5.0,
+        sigmaY=5.0,
+        borderType=cv2.BORDER_REFLECT_101,
+    )
+    coarse = cv2.resize(
+        low, (pool_size, pool_size), interpolation=cv2.INTER_AREA
+    )
+    coarse = coarse - coarse.mean()
+    coarse = coarse / np.sqrt(np.mean(coarse ** 2) + EPS)
+    return low, coarse
 
-    radius = 10
-    sigma = 5.0
-    coords = np.arange(2 * radius + 1, dtype=np.float32) - radius
-    g1d = np.exp(-0.5 * (coords / sigma) ** 2)
-    g1d = g1d / g1d.sum()
-    kernel = np.outer(g1d, g1d)  # (21, 21)
 
-    return cv2.filter2D(x_mean.astype(np.float32), cv2.CV_32F, kernel)
+def coarse_intensity_loss(reference: np.ndarray, translated: np.ndarray):
+    """返回粗网格相关性、1-rho 损失和逐格相关贡献。"""
+    contribution = reference * translated
+    correlation = float(contribution.mean())
+    loss = 1.0 - correlation
+    return correlation, loss, contribution
 
 
 # ============================================================
@@ -183,25 +204,24 @@ if __name__ == "__main__":
     he = cv2.resize(he, (W, H))
 
     # ---- 计算中间结果 ----
-    # BF (单通道): grad
-    bf_grad = grad_mag(bf)       # (H,W)
-    bf_low  = low_freq(bf)       # (H,W)
-
-    # AF (单通道): grad
+    # BF/AF 单通道尺度 1 梯度
+    bf_grad = grad_mag(bf)
     af_grad = grad_mag(af)
-    af_low  = low_freq(af)
 
     # BF+AF (2 通道): grad per channel + fused
     bf_af = np.stack([bf, af], axis=-1)  # (H, W, 2)
-    dual_grad_fused = grad_mag(bf_af)    # fused (weighted mean, default equal)
-    dual_low = low_freq(bf_af)           # low-freq of channel-mean
+    dual_grad = grad_mag(bf_af)
 
     # H&E (3 通道): grad per channel + fused
     he_grad_r = grad_mag(he[:, :, 2])   # R channel
     he_grad_g = grad_mag(he[:, :, 1])   # G channel
     he_grad_b = grad_mag(he[:, :, 0])   # B channel
-    he_grad_fused = grad_mag(he)         # 3-ch fused
-    he_low  = low_freq(he)
+    he_grad = grad_mag(he)
+    dual_low, dual_coarse = coarse_intensity_map(bf_af)
+    he_low, he_coarse = coarse_intensity_map(he)
+    intensity_corr, intensity_loss, coarse_contribution = (
+        coarse_intensity_loss(dual_coarse, he_coarse)
+    )
 
     def save_gray(path, img_data):
         """保存灰度图。"""
@@ -223,18 +243,24 @@ if __name__ == "__main__":
     save_rgb("03_HE_original.png", he[..., ::-1])
 
     save_gray("04_BF_grad.png", bf_grad)
-    save_gray("05_BF_lowfreq.png", bf_low)
+    save_gray("05_AF_grad.png", af_grad)
 
-    save_gray("06_AF_grad.png", af_grad)
-    save_gray("07_AF_lowfreq.png", af_low)
+    save_gray("06_Dual_grad_original.png", dual_grad)
 
-    save_gray("08_Dual_grad_fused.png", dual_grad_fused)
-    save_gray("09_Dual_lowfreq.png", dual_low)
+    save_gray("07_HE_grad_R.png", he_grad_r)
+    save_gray("08_HE_grad_G.png", he_grad_g)
+    save_gray("09_HE_grad_B.png", he_grad_b)
+    save_gray("10_HE_grad_original.png", he_grad)
 
-    save_gray("10_HE_grad_R.png", he_grad_r)
-    save_gray("11_HE_grad_G.png", he_grad_g)
-    save_gray("12_HE_grad_B.png", he_grad_b)
-    save_gray("13_HE_grad_fused.png", he_grad_fused)
-    save_gray("14_HE_lowfreq.png", he_low)
+    save_gray("11_Dual_channel_mean_Gaussian.png", dual_low)
+    save_gray("12_HE_channel_mean_Gaussian.png", he_low)
+    save_gray("13_Dual_coarse_normalized_8x8.png", dual_coarse)
+    save_gray("14_HE_coarse_normalized_8x8.png", he_coarse)
+    save_gray("15_Coarse_correlation_contribution.png", coarse_contribution)
+    print(
+        "  Coarse intensity distribution: "
+        f"correlation={intensity_corr:.6f}, "
+        f"loss={intensity_loss:.6f}"
+    )
 
     print(f"\nDone. All images saved to: {out_dir}")

@@ -2,11 +2,15 @@ import numpy as np
 import sys
 import ntpath
 import time
-from . import util, html
+from . import util
 from pathlib import Path
-import wandb
 import os
 import torch.distributed as dist
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
@@ -63,6 +67,10 @@ class Visualizer:
 
         # Initialize wandb if enabled
         if self.use_wandb:
+            if wandb is None:
+                raise RuntimeError(
+                    "--use_wandb was enabled, but the wandb package is not installed."
+                )
             # Only initialize wandb on main process (rank 0)
             if not dist.is_initialized() or dist.get_rank() == 0:
                 self.wandb_project_name = getattr(opt, "wandb_project_name", "CycleGAN-and-pix2pix")
@@ -72,6 +80,9 @@ class Visualizer:
                 self.wandb_run = None
 
         if self.use_html:  # create an HTML object at <checkpoints_dir>/web/; images will be saved under <checkpoints_dir>/web/images/
+            from . import html
+
+            self.html = html
             self.web_dir = Path(opt.checkpoints_dir) / opt.name / "web"
             self.img_dir = self.web_dir / "images"
             print(f"create web directory {self.web_dir}...")
@@ -118,17 +129,21 @@ class Visualizer:
                 util.save_image(image_numpy, img_path)
 
             # update website
-            webpage = html.HTML(self.web_dir, f"Experiment name = {self.name}", refresh=1)
+            webpage = self.html.HTML(
+                self.web_dir, f"Experiment name = {self.name}", refresh=1
+            )
             for n in range(epoch, 0, -1):
-                webpage.add_header(f"epoch [{n}]")
                 ims, txts, links = [], [], []
 
                 for label, image in visuals.items():
                     img_path = f"epoch{n:03d}_{label}.png"
-                    ims.append(img_path)
-                    txts.append(label)
-                    links.append(img_path)
-                webpage.add_images(ims, txts, links, width=self.win_size)
+                    if (self.img_dir / img_path).is_file():
+                        ims.append(img_path)
+                        txts.append(label)
+                        links.append(img_path)
+                if ims:
+                    webpage.add_header(f"epoch [{n}]")
+                    webpage.add_images(ims, txts, links, width=self.win_size)
             webpage.save()
 
     def plot_current_losses(self, total_iters, losses):

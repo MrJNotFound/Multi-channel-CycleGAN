@@ -26,7 +26,7 @@ except Exception:
 mode = "color"
 enable_secondary_input = False
 primary_dir = ""
-secondary_dir = ""
+secondary_dirs: List[str] = []
 mask_dir = ""
 output_dir = ""
 patch_w = 512
@@ -39,9 +39,13 @@ mask_output_ext = "png"
 jpeg_quality = 95
 prefix = "patch"
 seed: Optional[int] = 114514
-max_bg_ratio = 0.7
+bg_threshold = 0.7          # 逐块校验：背景占比超过此值视为"高背景"
+max_high_bg_ratio = 0.3     # 全局配额：高背景图块数占比不得超过此值
 mask_background_value = 0
 mask_background_tolerance = 0
+# 高背景图块全局配额计数器（跨所有大图共享）
+_high_bg_total = 0
+_saved_total = 0
 color_bg_mode = "white_black"
 white_thr = 230
 black_thr = 20
@@ -70,7 +74,7 @@ fill_rounds_limit = 5
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 GRAY_MODES = {"1", "L", "I", "I;16", "F", "LA"}
-SourceItem = Tuple[str, Optional[str], Optional[str]]
+SourceItem = Tuple[str, List[str], Optional[str]]
 
 
 # =========================
@@ -144,14 +148,14 @@ def close_if_needed(im: Optional[Image.Image]) -> None:
             pass
 
 
-def prepare_item_images(item: SourceItem) -> Optional[Tuple[Image.Image, Optional[Image.Image], Optional[Image.Image]]]:
-    primary_path, secondary_path, mask_path = item
+def prepare_item_images(item: SourceItem) -> Optional[Tuple[Image.Image, List[Image.Image], Optional[Image.Image]]]:
+    primary_path, secondary_paths, mask_path = item
 
     primary_im = open_primary_image(primary_path)
     if primary_im is None:
         return None
 
-    secondary_im: Optional[Image.Image] = None
+    secondary_ims: List[Image.Image] = []
     mask_im: Optional[Image.Image] = None
 
     try:
@@ -163,10 +167,12 @@ def prepare_item_images(item: SourceItem) -> Optional[Tuple[Image.Image, Optiona
             primary_im.close()
             return None
 
-        if secondary_path is not None:
+        for secondary_path in secondary_paths:
             secondary_im = open_primary_image(secondary_path)
             if secondary_im is None:
                 primary_im.close()
+                for im in secondary_ims:
+                    close_if_needed(im)
                 return None
 
             if secondary_im.size != primary_im.size:
@@ -177,13 +183,17 @@ def prepare_item_images(item: SourceItem) -> Optional[Tuple[Image.Image, Optiona
                 else:
                     primary_im.close()
                     secondary_im.close()
+                    for im in secondary_ims:
+                        close_if_needed(im)
                     return None
+            secondary_ims.append(secondary_im)
 
         if mask_path is not None:
             mask_im = open_mask_image(mask_path)
             if mask_im is None:
                 primary_im.close()
-                close_if_needed(secondary_im)
+                for im in secondary_ims:
+                    close_if_needed(im)
                 return None
 
             if mask_im.size != primary_im.size:
@@ -193,14 +203,16 @@ def prepare_item_images(item: SourceItem) -> Optional[Tuple[Image.Image, Optiona
                     mask_im = resized_mask
                 else:
                     primary_im.close()
-                    close_if_needed(secondary_im)
+                    for im in secondary_ims:
+                        close_if_needed(im)
                     mask_im.close()
                     return None
 
-        return primary_im, secondary_im, mask_im
+        return primary_im, secondary_ims, mask_im
     except Exception:
         close_if_needed(primary_im)
-        close_if_needed(secondary_im)
+        for im in secondary_ims:
+            close_if_needed(im)
         close_if_needed(mask_im)
         return None
 
@@ -234,23 +246,22 @@ def color_background_ratio(image_patch: Image.Image) -> float:
     return float(np.mean(bg_mask))
 
 
-def patch_is_accepted(primary_patch: Image.Image, mask_patch: Optional[Image.Image],
-                     secondary_patch: Optional[Image.Image] = None) -> bool:
+def get_patch_bg(primary_patch: Image.Image, mask_patch: Optional[Image.Image],
+                secondary_patches: Optional[List[Image.Image]] = None) -> float:
+    """计算图块的背景占比 (0~1)。返回 primary 和所有 secondary 中背景占比的最大值。"""
     if mode == "mask":
         if mask_patch is None:
-            return False
-        return mask_background_ratio(mask_patch) <= max_bg_ratio
+            return 0.0
+        return mask_background_ratio(mask_patch)
 
     if mode == "color":
-        if color_background_ratio(primary_patch) > max_bg_ratio:
-            return False
-        # 第二输入也做背景校验，确保配对的两个通道都不是背景
-        if secondary_patch is not None:
-            if color_background_ratio(secondary_patch) > max_bg_ratio:
-                return False
-        return True
+        bg = color_background_ratio(primary_patch)
+        if secondary_patches:
+            for sp in secondary_patches:
+                bg = max(bg, color_background_ratio(sp))
+        return bg
 
-    return True
+    return 0.0
 
 
 def save_patch(patch: Image.Image, out_path: str, ext: str) -> bool:
@@ -274,17 +285,18 @@ def sample_from_item(
     need: int,
     next_index: int,
     out_primary_dir: str,
-    out_secondary_dir: Optional[str],
+    out_secondary_dirs: List[str],
     out_mask_dir: Optional[str],
     primary_ext: str,
     mask_ext: str,
     pad: int,
 ) -> Tuple[int, int, int]:
+    global _high_bg_total, _saved_total
     loaded = prepare_item_images(item)
     if loaded is None:
         return 0, next_index, 0
 
-    primary_im, secondary_im, mask_im = loaded
+    primary_im, secondary_ims, mask_im = loaded
 
     produced_here = 0
     rejected_bg = 0
@@ -300,49 +312,60 @@ def sample_from_item(
                 break
 
             primary_patch = primary_im.crop(box)
-            secondary_patch = secondary_im.crop(box) if secondary_im is not None else None
+            secondary_patches = [im.crop(box) for im in secondary_ims]
             mask_patch = mask_im.crop(box) if mask_im is not None else None
 
-            if not patch_is_accepted(primary_patch, mask_patch, secondary_patch):
-                rejected_bg += 1
-                close_if_needed(primary_patch)
-                close_if_needed(secondary_patch)
-                close_if_needed(mask_patch)
-                continue
+            bg_ratio = get_patch_bg(primary_patch, mask_patch, secondary_patches)
+            is_high = bg_ratio > bg_threshold
+            if is_high:
+                # 高背景配额检查：总高背景占比不得超过 max_high_bg_ratio
+                if _saved_total > 0 and (_high_bg_total + 1) / (_saved_total + 1) > max_high_bg_ratio:
+                    rejected_bg += 1
+                    close_if_needed(primary_patch)
+                    for sp in secondary_patches:
+                        close_if_needed(sp)
+                    close_if_needed(mask_patch)
+                    continue
 
             stem = f"{prefix}_{next_index:0{pad}d}"
             primary_out = os.path.join(out_primary_dir, f"{stem}.{primary_ext}")
-            secondary_out = os.path.join(out_secondary_dir, f"{stem}.{primary_ext}") if out_secondary_dir else None
+            secondary_outs = [os.path.join(d, f"{stem}.{primary_ext}") for d in out_secondary_dirs]
             mask_out = os.path.join(out_mask_dir, f"{stem}.{mask_ext}") if out_mask_dir else None
 
             ok_primary = save_patch(primary_patch, primary_out, primary_ext)
-            ok_secondary = True
+            ok_secondaries = [save_patch(sp, sout, primary_ext)
+                              for sp, sout in zip(secondary_patches, secondary_outs)]
+            ok_secondary = all(ok_secondaries)
             ok_mask = True
 
-            if secondary_patch is not None and secondary_out is not None:
-                ok_secondary = save_patch(secondary_patch, secondary_out, primary_ext)
             if mask_patch is not None and mask_out is not None:
                 ok_mask = save_patch(mask_patch, mask_out, mask_ext)
 
             close_if_needed(primary_patch)
-            close_if_needed(secondary_patch)
+            for sp in secondary_patches:
+                close_if_needed(sp)
             close_if_needed(mask_patch)
 
             if ok_primary and ok_secondary and ok_mask:
                 produced_here += 1
                 next_index += 1
+                _saved_total += 1
+                if is_high:
+                    _high_bg_total += 1
             else:
                 if ok_primary and os.path.isfile(primary_out):
                     os.remove(primary_out)
-                if secondary_out is not None and ok_secondary and os.path.isfile(secondary_out):
-                    os.remove(secondary_out)
+                for ok_s, sout in zip(ok_secondaries, secondary_outs):
+                    if ok_s and os.path.isfile(sout):
+                        os.remove(sout)
                 if mask_out is not None and ok_mask and os.path.isfile(mask_out):
                     os.remove(mask_out)
 
         return produced_here, next_index, rejected_bg
     finally:
         close_if_needed(primary_im)
-        close_if_needed(secondary_im)
+        for im in secondary_ims:
+            close_if_needed(im)
         close_if_needed(mask_im)
 
 
@@ -351,11 +374,13 @@ def resolve_valid_items() -> List[SourceItem]:
     if not primary_paths:
         raise FileNotFoundError("primary_dir 为空，或未找到支持的图片格式。")
 
-    secondary_paths: List[str] = []
+    secondary_path_lists: List[List[str]] = []
     if enable_secondary_input:
-        secondary_paths = collect_image_paths(secondary_dir, recursive)
-        if not secondary_paths:
-            raise FileNotFoundError("enable_secondary_input=True，但 secondary_dir 为空。")
+        for s_idx, s_dir in enumerate(secondary_dirs, 1):
+            paths = collect_image_paths(s_dir, recursive)
+            if not paths:
+                raise FileNotFoundError(f"第 {s_idx} 个第二输入目录为空: {s_dir}")
+            secondary_path_lists.append(paths)
 
     mask_paths: List[str] = []
     if mode == "mask":
@@ -366,20 +391,23 @@ def resolve_valid_items() -> List[SourceItem]:
     # Match by sorted order: element i in primary pairs with element i in secondary/mask.
     # Truncate to the shortest list, with a warning.
     n = len(primary_paths)
-    if enable_secondary_input and len(secondary_paths) != n:
-        n_old = n
-        n = min(n, len(secondary_paths))
-        print(f"[Info] primary has {n_old} images, secondary has {len(secondary_paths)}. "
-              f"Truncating to {n} (sorted order).")
-        primary_paths = primary_paths[:n]
-        secondary_paths = secondary_paths[:n]
+    for s_idx, paths in enumerate(secondary_path_lists, 1):
+        if len(paths) != n:
+            n_old = n
+            n = min(n, len(paths))
+            print(f"[Info] primary has {n_old} images, secondary #{s_idx} has {len(paths)}. "
+                  f"Truncating to {n} (sorted order).")
+            primary_paths = primary_paths[:n]
+            for pl in secondary_path_lists:
+                pl[:] = pl[:n]
     if mode == "mask" and len(mask_paths) != n:
         n_old = n
         n = min(n, len(mask_paths))
         print(f"[Info] primary has {n_old} images, mask has {len(mask_paths)}. "
               f"Truncating to {n} (sorted order).")
         primary_paths = primary_paths[:n]
-        secondary_paths = secondary_paths[:n] if enable_secondary_input else []
+        for pl in secondary_path_lists:
+            pl[:] = pl[:n]
         mask_paths = mask_paths[:n]
 
     valid_items: List[SourceItem] = []
@@ -387,18 +415,19 @@ def resolve_valid_items() -> List[SourceItem]:
 
     for i in range(n):
         primary_path = primary_paths[i]
-        secondary_path = secondary_paths[i] if enable_secondary_input else None
+        secondary_paths = [pl[i] for pl in secondary_path_lists]
         mask_path = mask_paths[i] if mode == "mask" else None
 
-        item = (primary_path, secondary_path, mask_path)
+        item = (primary_path, secondary_paths, mask_path)
         loaded = prepare_item_images(item)
         if loaded is None:
             skipped_invalid += 1
             continue
 
-        primary_im, secondary_im, mask_im = loaded
+        primary_im, secondary_ims, mask_im = loaded
         close_if_needed(primary_im)
-        close_if_needed(secondary_im)
+        for im in secondary_ims:
+            close_if_needed(im)
         close_if_needed(mask_im)
         valid_items.append(item)
 
@@ -468,12 +497,19 @@ def main() -> None:
         np.random.seed(seed)
 
     out_primary_dir = os.path.join(output_dir, "images")
-    out_secondary_dir = os.path.join(output_dir, "paired") if enable_secondary_input else None
+    if enable_secondary_input:
+        if len(secondary_dirs) == 1:
+            out_secondary_dirs = [os.path.join(output_dir, "paired")]
+        else:
+            out_secondary_dirs = [os.path.join(output_dir, f"paired_{i}")
+                                  for i in range(1, len(secondary_dirs) + 1)]
+    else:
+        out_secondary_dirs = []
     out_mask_dir = os.path.join(output_dir, "masks") if mode == "mask" else None
 
     ensure_dir(out_primary_dir)
-    if out_secondary_dir is not None:
-        ensure_dir(out_secondary_dir)
+    for d in out_secondary_dirs:
+        ensure_dir(d)
     if out_mask_dir is not None:
         ensure_dir(out_mask_dir)
 
@@ -489,14 +525,15 @@ def main() -> None:
     print(f"Found valid source items: {len(valid_items)}")
     print(f"Output: {output_dir}")
     print(f"Target patches: {total_patches}, patch={patch_w}x{patch_h}")
-    print(f"Secondary input: {'enabled' if enable_secondary_input else 'disabled'}")
+    print(f"Secondary inputs: {len(secondary_dirs)} 个" if enable_secondary_input
+          else "Secondary input: disabled")
     if mode == "mask":
         print(
-            f"Mask filter: enabled (bg_value={mask_background_value}, tolerance={mask_background_tolerance}, max_bg_ratio={max_bg_ratio})"
+            f"Mask filter: enabled (bg_value={mask_background_value}, tolerance={mask_background_tolerance}, bg_threshold={bg_threshold}, max_high_bg={max_high_bg_ratio})"
         )
     elif mode == "color":
         print(
-            f"Color filter: enabled (bg_mode={color_bg_mode}, white_thr={white_thr}, black_thr={black_thr}, max_bg_ratio={max_bg_ratio})"
+            f"Color filter: enabled (bg_mode={color_bg_mode}, white_thr={white_thr}, black_thr={black_thr}, bg_threshold={bg_threshold}, max_high_bg={max_high_bg_ratio})"
         )
     else:
         print("Background filter: disabled")
@@ -512,21 +549,15 @@ def main() -> None:
                 continue
 
             got, next_index, rejected_bg = sample_from_item(
-                item,
-                need,
-                next_index,
-                out_primary_dir,
-                out_secondary_dir,
-                out_mask_dir,
-                primary_ext,
-                mask_ext,
-                pad,
+                item, need, next_index,
+                out_primary_dir, out_secondary_dirs, out_mask_dir,
+                primary_ext, mask_ext, pad,
             )
             produced += got
             progress.update(got)
 
             if idx % 10 == 0 or idx == len(valid_items):
-                extra = f", bg_rejected={rejected_bg}" if mode in {"mask", "color"} else ""
+                extra = f", bg_rejected={rejected_bg}, high_bg_quota={_high_bg_total}/{_saved_total}" if mode in {"mask", "color"} else ""
                 progress.log(f"Progress: items {idx}/{len(valid_items)}, produced {produced}/{total_patches}{extra}")
 
             if produced >= total_patches:
@@ -551,15 +582,9 @@ def main() -> None:
 
                     batch_need = min(remaining, max(1, total_patches // max(1, len(items_shuffled) * 10)))
                     got, next_index, rejected_bg = sample_from_item(
-                        item,
-                        batch_need,
-                        next_index,
-                        out_primary_dir,
-                        out_secondary_dir,
-                        out_mask_dir,
-                        primary_ext,
-                        mask_ext,
-                        pad,
+                        item, batch_need, next_index,
+                        out_primary_dir, out_secondary_dirs, out_mask_dir,
+                        primary_ext, mask_ext, pad,
                     )
                     produced += got
                     remaining -= got
@@ -580,10 +605,14 @@ def main() -> None:
                 f"仅生成了 {produced}/{total_patches}。可能过滤过严、有效样本过少，或尝试次数不足。"
             )
 
+        if mode in {"mask", "color"}:
+            final_overall = _high_bg_total / max(1, _saved_total)
+            progress.log(f"High-bg patches: {_high_bg_total}/{_saved_total} ({final_overall:.3f}, quota: {max_high_bg_ratio})")
+
         progress.log("Done.")
         progress.log(f"  images: {out_primary_dir}")
-        if out_secondary_dir is not None:
-            progress.log(f"  paired: {out_secondary_dir}")
+        for d in out_secondary_dirs:
+            progress.log(f"  paired: {d}")
         if out_mask_dir is not None:
             progress.log(f"  masks : {out_mask_dir}")
     finally:
@@ -610,7 +639,7 @@ if __name__ == "__main__":
         tk.Radiobutton(mode_win, text=text, variable=mode_var, value=val, font=("", 11)).grid(row=row, column=0, sticky="w", padx=30, pady=1)
         row += 1
 
-    tk.Checkbutton(mode_win, text="启用第二输入（配对裁剪）", variable=secondary_var, font=("", 11)).grid(row=row, column=0, sticky="w", padx=15, pady=(8, 2))
+    tk.Checkbutton(mode_win, text="启用第二输入（配对裁剪，可多个）", variable=secondary_var, font=("", 11)).grid(row=row, column=0, sticky="w", padx=15, pady=(8, 2))
     row += 1
 
     tk.Label(mode_win, text="随机种子 (留空=随机)：", font=("", 11)).grid(row=row, column=0, sticky="w", padx=15, pady=(8, 2))
@@ -643,13 +672,48 @@ if __name__ == "__main__":
             root.destroy()
             exit()
 
-    # ===== 4. 选择第二输入目录 =====
+    # ===== 4. 选择第二输入目录（可多个） =====
     if enable_secondary_input:
-        secondary_dir = filedialog.askdirectory(title="选择第二输入图像目录（配对）")
-        if not secondary_dir:
-            print("未选择第二输入目录，退出。")
+        add_win = tk.Toplevel(root)
+        add_win.title("添加第二输入目录")
+        add_win.resizable(False, False)
+
+        tk.Label(add_win, text="添加第二输入目录（可多个，按排序与主输入配对）",
+                 font=("", 11, "bold")).pack(pady=(14, 4), padx=24)
+
+        sec_listbox = tk.Listbox(add_win, width=70, height=6)
+        sec_listbox.pack(padx=20, pady=4)
+
+        def _add_sec_dir():
+            d = filedialog.askdirectory(title="选择第二输入图像目录（配对）")
+            if d:
+                secondary_dirs.append(d)
+                sec_listbox.insert(tk.END, f"  {len(secondary_dirs):2d}. {d}")
+
+        def _remove_sec_dir():
+            sel = sec_listbox.curselection()
+            if sel:
+                idx = sel[0]
+                sec_listbox.delete(idx)
+                secondary_dirs.pop(idx)
+
+        btn_frame = tk.Frame(add_win)
+        btn_frame.pack(pady=6)
+        tk.Button(btn_frame, text="添加目录", command=_add_sec_dir, width=12).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="移除选中", command=_remove_sec_dir, width=12).pack(side="left", padx=4)
+
+        tk.Button(add_win, text="确认", command=add_win.destroy,
+                  width=12, height=1).pack(pady=(10, 14))
+        add_win.grab_set()
+        root.wait_window(add_win)
+
+        if not secondary_dirs:
+            print("未选择任何第二输入目录，退出。")
             root.destroy()
             exit()
+        print(f"第二输入目录: {len(secondary_dirs)} 个")
+        for i, d in enumerate(secondary_dirs, 1):
+            print(f"  {i}. {d}")
 
     # ===== 5. 选择输出目录 =====
     output_dir = filedialog.askdirectory(title="选择输出根目录")
@@ -662,7 +726,8 @@ if __name__ == "__main__":
     pw_var = tk.IntVar(value=512)
     ph_var = tk.IntVar(value=512)
     total_var = tk.IntVar(value=2000)
-    bg_var = tk.DoubleVar(value=0.7)
+    bg_thr_var = tk.StringVar(value="0.7")
+    high_bg_quota_var = tk.StringVar(value="0.3")
     ext_var = tk.StringVar(value="jpg")
     rec_var = tk.BooleanVar(value=True)
     small_var = tk.BooleanVar(value=False)
@@ -681,9 +746,17 @@ if __name__ == "__main__":
     tk.Label(param_win, text="目标 Patch 总数:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
     tk.Entry(param_win, textvariable=total_var, width=8).grid(row=pr, column=1, sticky="w")
     pr += 1
-    tk.Label(param_win, text="最大背景占比:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
-    tk.Scale(param_win, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
-             variable=bg_var, length=150).grid(row=pr, column=1, sticky="w")
+    tk.Label(param_win, text="背景判定阈值:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    thr_frame = tk.Frame(param_win)
+    thr_frame.grid(row=pr, column=1, sticky="w")
+    tk.Entry(thr_frame, textvariable=bg_thr_var, width=6).pack(side="left")
+    tk.Label(thr_frame, text="  (>此值视为高背景)", font=("", 8), fg="gray").pack(side="left")
+    pr += 1
+    tk.Label(param_win, text="高背景配额上限:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
+    quota_frame = tk.Frame(param_win)
+    quota_frame.grid(row=pr, column=1, sticky="w")
+    tk.Entry(quota_frame, textvariable=high_bg_quota_var, width=6).pack(side="left")
+    tk.Label(quota_frame, text="  (高背景总数占比上限)", font=("", 8), fg="gray").pack(side="left")
     pr += 1
     tk.Label(param_win, text="输出格式:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
     tk.OptionMenu(param_win, ext_var, "jpg", "png", "tif").grid(row=pr, column=1, sticky="w")
@@ -702,7 +775,14 @@ if __name__ == "__main__":
     patch_w = pw_var.get()
     patch_h = ph_var.get()
     total_patches = total_var.get()
-    max_bg_ratio = bg_var.get()
+    try:
+        bg_threshold = float(bg_thr_var.get())
+        max_high_bg_ratio = float(high_bg_quota_var.get())
+        if bg_threshold <= 0 or max_high_bg_ratio < 0:
+            raise ValueError
+    except (ValueError, tk.TclError):
+        print(f"背景参数输入无效，请输入 0~1 之间的数值")
+        exit(1)
     output_ext = ext_var.get()
     recursive = rec_var.get()
     allow_smaller = small_var.get()
@@ -710,7 +790,8 @@ if __name__ == "__main__":
     print(f"Mode: {mode} | Secondary: {enable_secondary_input}")
     print(f"Primary: {primary_dir}")
     print(f"Output: {output_dir}")
-    print(f"Patch: {patch_w}x{patch_h} | Total: {total_patches} | Max BG: {max_bg_ratio}")
+    print(f"Patch: {patch_w}x{patch_h} | Total: {total_patches} | "
+          f"BG threshold: {bg_threshold} | High-bg quota: {max_high_bg_ratio}")
 
     main()
 

@@ -3,8 +3,9 @@
 Once you have trained your model with train_dual.py, you can use this script to test the model.
 It will load a saved model from '--checkpoints_dir' and save the results to '--results_dir'.
 
-It first creates model and dataset given the option. It will hard-code some parameters.
-It then runs inference for '--num_test' images and save results to an HTML file.
+It creates the model and dataset from command-line options, then runs inference
+for '--num_test' images and saves only the generated images. Batch size and data
+loader settings are configurable; every image in a batch is saved.
 
 Example (You need to train models first or download pre-trained models from our website):
     Test a CycleGAN model (both sides):
@@ -31,72 +32,78 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-import sys
-from pathlib import Path
 from options.test_options import TestOptions
 from data import create_dataset
 from models import create_model
-from util.visualizer import save_images
-from util import html
-import torch
-
-try:
-    import wandb
-except ImportError:
-    print('Warning: wandb package cannot be found. The option "--use_wandb" will result in error.')
+from util import util
 
 
 if __name__ == "__main__":
 
-    sys.argv = [
-        "infer_dual.py",
-        "--dataroot", "./datasets/test_validation_dual_BF_AF_HE_512",
-        "--name", "mouse_kidney_dual_spif_256",
-        "--model", "test",
-        "--model_suffix", "_A",
-        "--dataset_mode", "dual_channel",
-        "--input_nc", "2",
-        "--output_nc", "3",
-        # "--netG", "resnet_9blocks",  # explicitly set for stack model; comment out for fusion model
-        "--no_dropout",
-        "--preprocess", "none",
-        "--results_dir", r"C:\Users\30927\Desktop\img_histology\virtual_staining_validation\dewax\spif",
-        "--num_test", "20000",
-        "--epoch", "latest",
-    ]
+    if len(sys.argv) == 1:
+        sys.argv = [
+            "infer_dual.py",
+            "--dataroot", "./datasets/test_validation_spleen_dual_BF_AF_HE_512",
+            "--name", "spleen_dual_spif_v2_1024_256",
+            "--model", "test",
+            "--model_suffix", "_A",
+            "--dataset_mode", "dual_channel",
+            "--input_nc", "2",
+            "--output_nc", "3",
+            "--spif_arch", "v2",
+            # "--netG", "resnet_9blocks",  # explicitly set for stack model
+            "--no_dropout",
+            "--preprocess", "none",
+            "--results_dir", "./results",
+            "--num_test", "20000",
+            "--epoch", "latest",
+            "--serial_batches",
+            "--no_flip",
+            "--num_threads", "0",
+            "--batch_size", "1",
+            "--gpu_ids", "0",
+        ]
 
     opt = TestOptions().parse()  # get test options
-    opt.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # hard-code some parameters for test
-    opt.num_threads = 0  # test code only supports num_threads = 0
-    opt.batch_size = 1  # test code only supports batch_size = 1
-    opt.serial_batches = True  # disable data shuffling; comment this line if results on randomly chosen images are needed.
-    opt.no_flip = True  # no flip; comment this line if results on flipped images are needed.
+    opt.device = util.init_ddp(opt.gpu_ids)
 
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     model = create_model(opt)  # create a model given opt.model and other options
     model.setup(opt)  # regular setup: load and print networks; create schedulers
 
-    # create a website
+    # Keep the historical output layout for downstream stitching tools, but do
+    # not create an HTML report or save input/reconstruction visualizations.
     web_dir = Path(opt.results_dir) / opt.name / f"{opt.phase}_{opt.epoch}"  # define the website directory
     if opt.load_iter > 0:  # load_iter is 0 by default
         web_dir = Path(f"{web_dir}_iter{opt.load_iter}")
-    print(f"creating web directory {web_dir}")
-    webpage = html.HTML(web_dir, f"Experiment = {opt.name}, Phase = {opt.phase}, Epoch = {opt.epoch}")
+    output_dir = web_dir / "images"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"saving generated images to {output_dir}")
     # test with eval mode. This only affects layers like batchnorm and dropout.
     # For [pix2pix]: we use batchnorm and dropout in the original pix2pix. You can experiment it with and without eval() mode.
     # For [CycleGAN]: It should not affect CycleGAN as CycleGAN uses instancenorm without dropout.
     if opt.eval:
         model.eval()
-    for i, data in enumerate(dataset):
-        if i >= opt.num_test:  # only apply our model to opt.num_test images.
+    total_images = min(len(dataset), opt.num_test)
+    print(f"Inference dataset size = {len(dataset)}; processing = {total_images}")
+    processed = 0
+    for data in dataset:
+        if processed >= total_images:
             break
         model.set_input(data)  # unpack data from data loader
         model.test()  # run inference
-        visuals = model.get_current_visuals()  # get image results
-
-        img_path = model.get_image_paths()  # get image paths
-        if i % 5 == 0:  # save images to an HTML file
-            print(f"processing ({i:04d})-th image... {img_path}")
-        save_images(webpage, visuals, img_path, aspect_ratio=opt.aspect_ratio, width=opt.display_winsize)
-    webpage.save()  # save the HTML
+        image_paths = model.get_image_paths()
+        if isinstance(image_paths, (str, Path)):
+            image_paths = [image_paths]
+        remaining = total_images - processed
+        batch_count = min(len(image_paths), remaining)
+        for batch_index in range(batch_count):
+            image_name = f"{Path(image_paths[batch_index]).stem}_fake.png"
+            generated = util.tensor2im(model.fake[batch_index:batch_index + 1])
+            util.save_image(
+                generated,
+                output_dir / image_name,
+                aspect_ratio=opt.aspect_ratio,
+            )
+        processed += batch_count
+        print(f"Processed {processed}/{total_images} images")

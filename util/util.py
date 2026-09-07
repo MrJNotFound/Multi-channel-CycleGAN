@@ -53,7 +53,12 @@ def diagnose_network(net, name="network"):
 
 
 # initialize ddp
-def init_ddp():
+def init_ddp(gpu_ids=None):
+    """Initialize DDP or resolve the explicitly requested local device.
+
+    An empty parsed ``gpu_ids`` list represents ``--gpu_ids -1`` and must stay
+    on CPU. Passing ``None`` preserves auto-detection for legacy callers.
+    """
     # Initialize DDP if LOCAL_RANK is set
     is_ddp = "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1
 
@@ -63,9 +68,15 @@ def init_ddp():
         local_rank = int(os.environ["LOCAL_RANK"])
         device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(local_rank)
-    elif torch.cuda.is_available():
-        device = torch.device("cuda:0")
-        torch.cuda.set_device(0)
+    elif torch.cuda.is_available() and (gpu_ids is None or len(gpu_ids) > 0):
+        gpu_id = 0 if gpu_ids is None else int(gpu_ids[0])
+        if gpu_id >= torch.cuda.device_count():
+            raise ValueError(
+                f"Requested CUDA device {gpu_id}, but only "
+                f"{torch.cuda.device_count()} device(s) are available."
+            )
+        device = torch.device(f"cuda:{gpu_id}")
+        torch.cuda.set_device(gpu_id)
     else:
         device = torch.device("cpu")
     print(f"Initialized with device {device}")

@@ -4,11 +4,17 @@
 
 ## 项目结构
 
+Git 保留范围、忽略规则和本地文件说明见 [`docs/REPOSITORY_SCOPE.md`](docs/REPOSITORY_SCOPE.md)。
+
 ```
 Multi-layer-CycleGAN/
 ├── models/                     # 模型定义
-│   ├── spif_model.py           # SPIF 模型（CycleGAN + 梯度域结构保持损失 + 跨通道融合）
-│   ├── cycle_gan_model.py      # 标准 CycleGAN（支持双通道输入）
+│   ├── registry.py            # 架构 / 输入类别 / 融合 / 额外损失组合
+│   ├── cycle_gan/             # 标准、Stack、结构保持和阈值内容保持
+│   ├── cut/                   # CUT、双类 Stack 与单图实验扩展
+│   ├── pix2pix/               # 配对监督与 Lab 着色适配
+│   ├── losses/                # 结构损失、强度损失、PatchNCE
+│   ├── runtime/               # 生成器推理适配
 │   ├── networks.py             # 生成器 / 判别器 / SPIF 双分支融合网络
 │   └── base_model.py           # 抽象基类
 ├── data/                       # 数据加载
@@ -16,14 +22,15 @@ Multi-layer-CycleGAN/
 │   └── unaligned_dataset.py    # 标准非配对数据集
 ├── options/                    # 命令行参数配置
 ├── util/                       # 工具函数（可视化、DDP 等）
-├── train_dual.py               # 训练入口
-├── infer_dual.py               # 测试 / 推理入口
+├── training/train.py           # 模块化统一训练入口
+├── inference/infer.py          # 模块化统一推理入口
+├── launch_gui.py               # 图形化训练 / 推理控制台
 └── tool/                       # 辅助工具脚本
     ├── patch_generate_multi_mode.py  # 滑窗切块
     ├── patch_stitching.py            # 图像拼接
     ├── visualize_content_loss.py     # SPIF 内容损失可视化
     ├── auto_freq_filter.py           # 频域滤波
-    ├── img_registrating.py           # 图像配准
+    ├── img_registrating_pair.py      # 成对图像配准（依赖 series 模块）
     ├── color_normalization.py        # 颜色归一化
     ├── threshold_seg.py              # 阈值分割
     └── ...
@@ -31,28 +38,31 @@ Multi-layer-CycleGAN/
 
 ## 核心特性
 
-### 1. SPIF 生成器（SPIFGenerator）
+### 1. SPIF V2 生成器（SPIFV2Generator）
 
-当 `input_nc=2` 时，G_A 自动切换为双分支融合结构：
+`--model spif --spif_arch v2` 使用单阶段空间—通道竞争融合结构：
 
 ```
-BF (1, H, W) → Head_BF → feat_BF ─┐
-                                   ├→ SPIFFusion → Shared Backbone → Output
-AF (1, H, W) → Head_AF → feat_AF ─┘
+BF → 独立编码器 ─┐
+                  ├→ H/2 竞争式融合 → 共享下采样 → ResNet → 跳连解码 → H&E
+AF → 独立编码器 ─┘
 ```
 
-- **Head_BF / Head_AF**：独立的 7×7 卷积分支，各自编码单通道特征
-- **SPIFFusion**：通过通道注意力（Squeeze-and-Excitation）实现跨模态特征交换
-- **Shared Backbone**：标准 ResNet 下采样 → ResNet Blocks → 上采样
+- **单阶段竞争融合**：在 `H/2` 联合空间权重与通道权重，BF/AF 权重互补归一化，可在局部区域抑制不可靠模态
+- **共享语义编码**：融合结果经共享下采样进入 `H/4` ResNet 主干，避免从已融合特征重复构造并再次融合两条高度相关的分支
+- **结构跳连**：`H/2` 融合特征直接参与解码，减少细边缘经过瓶颈后的损失
+- **改进反向生成器**：共享 H&E 编码和低分辨率语义，从 `H/2` 开始使用独立 BF/AF 解码器
+- **兼容旧结构**：`--spif_arch legacy` 使用原单尺度 CCF；`--spif_arch stack` 使用标准堆叠 ResNet
 
 ### 2. SPIF 模型
 
-SPIF（Structure-Preserving Image Fusion）在标准 CycleGAN 基础上添加了 **梯度域结构保持损失** 与 **跨通道特征融合**：
+SPIF（Structure-Preserving Image Fusion）在标准 CycleGAN 基础上添加了 **结构保持损失** 与 **跨通道特征融合**：
 
-- 对输入和生成图像计算逐通道 Sobel 梯度幅值，通过加权算术平均融合
-- 用 L1 损失匹配梯度结构，引导生成器保留边缘和纹理
-- 可选的低频锚定项（`--lambda_low_freq`）防止前景/背景翻转
-- 损失权重按 $15 \cdot e^{-counter / data\_size}$ 指数衰减，使训练初期以结构引导为主，后期交给 CycleGAN 目标主导
+- 只在原始图像分辨率计算逐通道 Sobel 梯度幅值，通过加权算术平均融合，专门约束细微结构
+- 梯度不做逐图 RMS 归一化，避免将近均匀背景中的微弱噪声放大为强结构
+- 使用反射填充避免随机裁剪边界产生人工梯度
+- 强度项沿用原论文的通道均值与 21×21 Gaussian 低通，在 8×8 粗网格上最小化 `1−ρ`，以较软的方向性监督维持大块组织的明暗分布，不回归具体亮度值
+- 梯度与强度使用独立的前置余弦衰减：默认分别在总 epoch 的 10% 和 2.5% 处归零；前者负责细微结构，后者只在最初期引导粗粒度明暗布局并避免前景/背景反转
 
 ### 3. 双通道数据集
 
@@ -70,14 +80,24 @@ dataroot/
 
 ## 快速开始
 
+### 图形界面
+
+```bash
+python launch_gui.py
+```
+
+界面通过“架构、输入类别、融合策略、额外损失”四项联动选择组合，只保留“训练 / 推理”两个执行入口。
+使用说明见 [`docs/GUI_CN.md`](docs/GUI_CN.md)，目录与新旧命名映射见 [`models/README.md`](models/README.md)。
+
 ### 训练
 
 ```bash
 # SPIF 模型（推荐用于双通道虚拟染色）
-python train_dual.py \
+python training/train.py \
     --dataroot ./datasets/mouse_kidney_dual_BF_AF_HE \
-    --name mouse_kidney_dual_BF_AF_HE \
-    --model spif \
+    --name mouse_kidney_dual_BF_AF_HE_v2 \
+    --model cycle_gan_dual_fusion_structure \
+    --spif_arch v2 \
     --dataset_mode dual_channel \
     --input_nc 2 \
     --output_nc 3 \
@@ -88,10 +108,10 @@ python train_dual.py \
     --crop_size 256
 
 # 标准 CycleGAN（单通道 / RGB）
-python train_dual.py \
+python training/train.py \
     --dataroot ./datasets/maps \
     --name maps_cyclegan \
-    --model cycle_gan \
+    --model cycle_gan_single_none_base \
     --input_nc 3 \
     --output_nc 3
 ```
@@ -99,10 +119,14 @@ python train_dual.py \
 ### 测试
 
 ```bash
-python infer_dual.py \
+python inference/infer.py \
     --dataroot <test_data_path> \
-    --name mouse_kidney_dual_BF_AF_HE \
-    --model spif \
+    --name mouse_kidney_dual_BF_AF_HE_v2 \
+    --model test \
+    --source_model cycle_gan_dual_fusion_structure \
+    --model_suffix _A \
+    --dataset_mode dual_channel \
+    --spif_arch v2 \
     --input_nc 2 \
     --output_nc 3 \
     --no_dropout \
@@ -114,14 +138,21 @@ python infer_dual.py \
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--model` | `cycle_gan` | 模型类型：`spif` / `cycle_gan` / `pix2pix` |
+| `--model` | `cycle_gan` | 新命名为架构_类别_融合_额外损失；旧 `spif` / `cycle_gan` 等名称兼容 |
 | `--dataset_mode` | `unaligned` | 数据集模式：`dual_channel` / `unaligned` / `aligned` |
 | `--input_nc` | `3` | 输入通道数：`2`=双通道 BF+AF, `3`=RGB, `1`=灰度 |
 | `--output_nc` | `3` | 输出通道数 |
-| `--netG` | `resnet_9blocks` | 生成器架构（2 通道时自动切换为 `spif_9blocks`） |
+| `--netG` | `resnet_9blocks` | SPIF 根据 `--spif_arch` 自动选择对应的前向和反向生成器 |
+| `--spif_arch` | `v2` | `v2`=单阶段空间—通道竞争融合，`legacy`=原始通道 CCF，`stack`=标准堆叠 ResNet |
 | `--lambda_A/B` | `10.0` | 循环一致性损失权重 |
 | `--lambda_identity` | `0.5` | 身份映射损失权重（input_nc ≠ output_nc 时自动禁用） |
-| `--lambda_low_freq` | `0.5` | 低频锚定项权重（SPIF 专属，防止前景/背景翻转） |
+| `--lambda_content` | `1.0` | SP loss 总倍率；设为 0 可关闭整个 SP loss |
+| `--lambda_sp` | `1.0` | SPIF 结构保持损失的初始强度 |
+| `--lambda_intensity` | `0.5` | 粗粒度组织明暗分布项相对权重；`--lambda_low_freq` 保留为兼容别名 |
+| `--grad_channel_weights` | 等权 | BF/AF 在梯度融合及强度通道均值中的权重，例如 `0.5 0.5` |
+| `--sp_grad_decay_fraction` | `0.1` | 原尺寸细微结构梯度引导的总 epoch 比例；`--sp_decay_fraction` 保留为兼容别名 |
+| `--sp_intensity_decay_fraction` | `0.025` | 粗粒度组织明暗分布引导的总 epoch 比例，应短于梯度窗口 |
+| `--intensity_pool_size` | `8` | 粗粒度强度相关性使用的网格尺寸 |
 | `--gan_mode` | `lsgan` | GAN 目标函数：`lsgan` / `vanilla` / `wgangp` |
 | `--norm` | `instance` | 归一化层：`instance` / `batch` / `syncbatch` / `none` |
 
@@ -133,7 +164,7 @@ python infer_dual.py \
 - **patch_stitching.py** — 将推理结果拼接回大图
 - **visualize_content_loss.py** — SPIF 内容损失中间结果可视化
 - **auto_freq_filter.py** — 自动频域滤波去噪
-- **img_registrating.py** — 非配对图像刚性/弹性配准
+- **img_registrating_pair.py** — 成对图像刚性/弹性配准，依赖同目录的 `img_registrating_series.py`
 - **color_normalization.py** — H&E 颜色归一化
 
 ## 依赖

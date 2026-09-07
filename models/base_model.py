@@ -105,10 +105,7 @@ class BaseModel(ABC):
                     if hasattr(state_dict, "_metadata"):
                         del state_dict._metadata
 
-                    # patch InstanceNorm checkpoints
-                    for key in list(state_dict.keys()):
-                        self.__patch_instance_norm_state_dict(state_dict, net, key.split("."))
-                    net.load_state_dict(state_dict, strict=False)
+                    self._load_network_state(net, state_dict, load_path)
 
                 # Move network to device
                 net.to(self.device)
@@ -196,7 +193,10 @@ class BaseModel(ABC):
         errors_ret = OrderedDict()
         for name in self.loss_names:
             if isinstance(name, str):
-                errors_ret[name] = float(getattr(self, "loss_" + name))  # float(...) works for both scalar tensor and float number
+                value = getattr(self, "loss_" + name)
+                if torch.is_tensor(value):
+                    value = value.detach().item()
+                errors_ret[name] = float(value)
         return errors_ret
 
     def save_networks(self, epoch):
@@ -242,6 +242,76 @@ class BaseModel(ABC):
                 return
             self.__patch_instance_norm_state_dict(state_dict, submodule, keys, i + 1)
 
+    @staticmethod
+    def _validate_spif_checkpoint_architecture(net, state_dict, load_path):
+        """Prevent silent partial loading between legacy and V2 SPIF models."""
+        class_name = net.__class__.__name__
+        keys = state_dict.keys()
+        checkpoint_is_v2_forward = any(
+            key.startswith("fusion_half.") for key in keys
+        )
+        checkpoint_is_single_stage_v2_forward = any(
+            key.startswith("down_shared.") for key in keys
+        )
+        checkpoint_is_two_stage_v2_forward = any(
+            key.startswith(("down_bf.", "down_af.", "fusion_quarter."))
+            for key in keys
+        )
+        checkpoint_is_v2_reverse = any(
+            key.startswith("up_shared.") or key.startswith("decoder_bf.")
+            for key in keys
+        )
+
+        if class_name == "SPIFV2Generator" and not checkpoint_is_v2_forward:
+            raise RuntimeError(
+                f"Checkpoint {load_path} is not a SPIF V2 forward generator. "
+                "Use --spif_arch legacy for an old checkpoint, or train a V2 "
+                "checkpoint before loading it."
+            )
+        if (class_name == "SPIFV2Generator"
+                and checkpoint_is_two_stage_v2_forward
+                and not checkpoint_is_single_stage_v2_forward):
+            raise RuntimeError(
+                f"Checkpoint {load_path} uses the retired two-stage SPIF V2 "
+                "forward generator. The current V2 generator uses one H/2 "
+                "competitive fusion followed by shared downsampling; retrain "
+                "the forward generator with the current architecture."
+            )
+        if class_name == "SPIFDualV2Generator" and not checkpoint_is_v2_reverse:
+            raise RuntimeError(
+                f"Checkpoint {load_path} is not a SPIF V2 reverse generator. "
+                "Use --spif_arch legacy for an old checkpoint, or train a V2 "
+                "checkpoint before loading it."
+            )
+        if class_name == "SPIFGenerator" and checkpoint_is_v2_forward:
+            raise RuntimeError(
+                f"Checkpoint {load_path} contains a SPIF V2 generator, but the "
+                "current model uses --spif_arch legacy."
+            )
+        if class_name == "SPIFDualGenerator" and checkpoint_is_v2_reverse:
+            raise RuntimeError(
+                f"Checkpoint {load_path} contains a SPIF V2 reverse generator, "
+                "but the current model uses --spif_arch legacy."
+            )
+
+    def _load_network_state(self, net, state_dict, load_path):
+        self._validate_spif_checkpoint_architecture(net, state_dict, load_path)
+        for key in list(state_dict.keys()):
+            self.__patch_instance_norm_state_dict(
+                state_dict, net, key.split(".")
+            )
+        incompatible = net.load_state_dict(state_dict, strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            print(
+                f"WARNING: non-strict checkpoint load for {load_path}: "
+                f"{len(incompatible.missing_keys)} missing keys, "
+                f"{len(incompatible.unexpected_keys)} unexpected keys."
+            )
+            if incompatible.missing_keys:
+                print("  missing:", incompatible.missing_keys[:10])
+            if incompatible.unexpected_keys:
+                print("  unexpected:", incompatible.unexpected_keys[:10])
+
     def load_networks(self, epoch):
         """Load all networks from the disk for DDP."""
 
@@ -260,10 +330,7 @@ class BaseModel(ABC):
                 if hasattr(state_dict, "_metadata"):
                     del state_dict._metadata
 
-                # patch InstanceNorm checkpoints
-                for key in list(state_dict.keys()):
-                    self.__patch_instance_norm_state_dict(state_dict, net, key.split("."))
-                net.load_state_dict(state_dict, strict=False)
+                self._load_network_state(net, state_dict, load_path)
 
         # Add a barrier to sync all processes before continuing
         if dist.is_initialized():

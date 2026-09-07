@@ -1,8 +1,8 @@
 import torch
 import itertools
 from util.image_pool import ImagePool
-from .base_model import BaseModel
-from . import networks
+from models.base_model import BaseModel
+from models import networks
 
 
 class CycleGANModel(BaseModel):
@@ -80,18 +80,11 @@ class CycleGANModel(BaseModel):
         # define networks (both Generators and discriminators)
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
-        netG_A_type = opt.netG
-        if opt.input_nc == 2 and netG_A_type == "resnet_9blocks":
-            netG_A_type = "spif_9blocks"
-        elif opt.input_nc == 2 and netG_A_type == "resnet_6blocks":
-            netG_A_type = "spif_6blocks"
-        netG_B_type = opt.netG
-        if opt.input_nc == 2 and netG_B_type == "resnet_9blocks":
-            netG_B_type = "spif_dual_9blocks"
-        elif opt.input_nc == 2 and netG_B_type == "resnet_6blocks":
-            netG_B_type = "spif_dual_6blocks"
-        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_A_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
-        self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, netG_B_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
+        # Keep CycleGAN as a true stacked-input baseline. SPIF-specific
+        # generators are selected by SPIFModel rather than being silently
+        # enabled whenever input_nc happens to be two.
+        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
+        self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
         if self.isTrain:  # define discriminators
             self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain)
@@ -114,6 +107,13 @@ class CycleGANModel(BaseModel):
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
+            self.update_discriminators = True
+
+    def set_discriminator_updates(self, enabled):
+        """Enable or disable discriminator optimization during fine-tuning."""
+        self.update_discriminators = bool(enabled)
+        if not self.update_discriminators:
+            self.set_requires_grad([self.netD_A, self.netD_B], False)
 
     def set_input(self, input):
         """Unpack input data from the dataloader and perform necessary pre-processing steps.
@@ -216,6 +216,10 @@ class CycleGANModel(BaseModel):
         self.backward_G()  # calculate gradients for G_A and G_B
         self.optimizer_G.step()  # update G_A and G_B's weights
         # D_A and D_B
+        if not self.update_discriminators:
+            self.loss_D_A = 0.0
+            self.loss_D_B = 0.0
+            return
         self.set_requires_grad([self.netD_A, self.netD_B], True)
         self.optimizer_D.zero_grad()  # set D_A and D_B's gradients to zero
         self.backward_D_A()  # calculate gradients for D_A

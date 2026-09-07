@@ -4,6 +4,7 @@ It also includes common transformation functions (e.g., get_transform, __scale_w
 """
 
 import random
+from functools import partial
 import numpy as np
 import torch.utils.data as data
 from PIL import Image
@@ -87,22 +88,26 @@ def get_transform(opt, params=None, grayscale=False, method=transforms.Interpola
         osize = [opt.load_size, opt.load_size]
         transform_list.append(transforms.Resize(osize, method))
     elif "scale_width" in opt.preprocess:
-        transform_list.append(transforms.Lambda(lambda img: __scale_width(img, opt.load_size, opt.crop_size, method)))
+        transform_list.append(transforms.Lambda(partial(
+            __scale_width, target_size=opt.load_size, crop_size=opt.crop_size, method=method
+        )))
 
     if "crop" in opt.preprocess:
         if params is None:
             transform_list.append(transforms.RandomCrop(opt.crop_size))
         else:
-            transform_list.append(transforms.Lambda(lambda img: __crop(img, params["crop_pos"], opt.crop_size)))
+            transform_list.append(transforms.Lambda(partial(
+                __crop, pos=params["crop_pos"], size=opt.crop_size
+            )))
 
     if opt.preprocess == "none":
-        transform_list.append(transforms.Lambda(lambda img: __make_power_2(img, base=4, method=method)))
+        transform_list.append(transforms.Lambda(partial(__make_power_2, base=4, method=method)))
 
     if not opt.no_flip:
         if params is None:
             transform_list.append(transforms.RandomHorizontalFlip())
         elif params["flip"]:
-            transform_list.append(transforms.Lambda(lambda img: __flip(img, params["flip"])))
+            transform_list.append(transforms.Lambda(partial(__flip, flip=params["flip"])))
 
     if convert:
         transform_list += [transforms.ToTensor()]

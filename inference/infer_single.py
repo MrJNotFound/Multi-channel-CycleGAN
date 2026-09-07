@@ -11,14 +11,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-import sys
-from pathlib import Path
 from options.test_options import TestOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import save_images
 from util import html
-import torch
+from util.util import init_ddp
 
 try:
     import wandb
@@ -28,27 +26,30 @@ except ImportError:
 
 if __name__ == "__main__":
 
-    sys.argv = [
-        "infer_single.py",
-        "--dataroot", "C:/Users/30927/Desktop/Multi-layer-CycleGAN/datasets/mouse_kidney_SF_512/testA_AF",
-        "--name", "mouse_kidney_AF_HE_256",
-        "--model", "test",
-        "--model_suffix", "_A",
-        "--input_nc", "3",
-        "--output_nc", "3",
-        "--no_dropout",
-        "--preprocess", "none",
-        "--results_dir", r"C:\Users\30927\Desktop\img_histology\stain_kidney\kidney_fake\kidney",
-        "--num_test", "10000",
-        "--epoch", "latest",
-    ]
+    if len(sys.argv) == 1:
+        sys.argv = [
+            "infer_single.py",
+            "--dataroot", "./datasets/test_spleen_single_AF_HE_1024_256",
+            "--name", "spleen_single_AF_1024_256",
+            "--model", "test",
+            "--model_suffix", "_A",
+            "--dataset_mode", "single",
+            "--input_nc", "3",
+            "--output_nc", "3",
+            "--no_dropout",
+            "--preprocess", "none",
+            "--results_dir", "./results",
+            "--num_test", "10000",
+            "--epoch", "latest",
+            "--serial_batches",
+            "--no_flip",
+            "--num_threads", "0",
+            "--batch_size", "1",
+            "--gpu_ids", "0",
+        ]
 
     opt = TestOptions().parse()
-    opt.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    opt.num_threads = 0
-    opt.batch_size = 1
-    opt.serial_batches = True
-    opt.no_flip = True
+    opt.device = init_ddp(opt.gpu_ids)
 
     dataset = create_dataset(opt)
     model = create_model(opt)
@@ -61,15 +62,32 @@ if __name__ == "__main__":
     webpage = html.HTML(web_dir, f"Experiment = {opt.name}, Phase = {opt.phase}, Epoch = {opt.epoch}")
     if opt.eval:
         model.eval()
-    for i, data in enumerate(dataset):
-        if i >= opt.num_test:
+    total_images = min(len(dataset), opt.num_test)
+    print(f"Inference dataset size = {len(dataset)}; processing = {total_images}")
+    processed = 0
+    for data in dataset:
+        if processed >= total_images:
             break
         model.set_input(data)
         model.test()
         visuals = model.get_current_visuals()
-
-        img_path = model.get_image_paths()
-        if i % 5 == 0:
-            print(f"processing ({i:04d})-th image... {img_path}")
-        save_images(webpage, visuals, img_path, aspect_ratio=opt.aspect_ratio, width=opt.display_winsize)
+        image_paths = model.get_image_paths()
+        if isinstance(image_paths, (str, Path)):
+            image_paths = [image_paths]
+        remaining = total_images - processed
+        batch_count = min(len(image_paths), remaining)
+        for batch_index in range(batch_count):
+            batch_visuals = {
+                name: image[batch_index:batch_index + 1]
+                for name, image in visuals.items()
+            }
+            save_images(
+                webpage,
+                batch_visuals,
+                [image_paths[batch_index]],
+                aspect_ratio=opt.aspect_ratio,
+                width=opt.display_winsize,
+            )
+        processed += batch_count
+        print(f"Processed {processed}/{total_images} images")
     webpage.save()

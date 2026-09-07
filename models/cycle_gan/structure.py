@@ -1,30 +1,33 @@
 import torch
-import torch.nn.functional as F
 import itertools
+import math
 from util.image_pool import ImagePool
-from .base_model import BaseModel
-from . import networks
-import numpy as np
+from models.base_model import BaseModel
+from models import networks
+from models.losses.structure import (
+    frontloaded_cosine_decay, FineStructureGradientLoss,
+    CoarseIntensityDistributionLoss,
+)
 
 
 class SPIFModel(BaseModel):
     """
     SPIF (Structure-Preserving Image Fusion) model based on CycleGAN.
 
-    Extends CycleGAN with structure-preserving content loss computed in the
-    gradient domain via Sobel edge detection, and cross-channel feature fusion
-    for dual-channel input. Designed for virtual H&E staining from BF + AF.
+    Extends CycleGAN with an original-resolution fine-structure gradient loss,
+    a brief coarse intensity-distribution guide, and cross-channel feature
+    fusion for dual-channel input. Designed for virtual H&E staining from BF + AF.
 
     The model training requires '--dataset_mode dual_channel' dataset.
-    By default, it uses a '--netG resnet_9blocks' ResNet generator,
-    a '--netD basic' discriminator (PatchGAN), and LSGAN objective.
+    By default, ``--spif_arch v2`` selects the refined forward and reverse
+    generators, with a basic PatchGAN discriminator and an LSGAN objective.
 
     Core innovations:
-    1. Cross-channel feature fusion (SPIFFusion) — BF and AF features exchange
-       context via channel attention before merging.
-    2. Gradient-domain structure-preserving loss — Sobel edge matching ensures
-       tissue morphology is preserved during translation, with an optional
-       low-frequency anchor to prevent foreground/background inversion.
+    1. Single-stage competitive fusion — BF and AF are jointly reweighted in
+       both channel and spatial dimensions at H/2 before shared encoding.
+    2. Original-resolution gradients preserve fine structures, while a
+       faster-decaying coarse correlation loss guides the large-scale intensity
+       distribution without regressing exact BF/AF-to-H&E brightness values.
 
     CycleGAN paper: https://arxiv.org/pdf/1703.10593.pdf
     """
@@ -50,6 +53,18 @@ class SPIFModel(BaseModel):
         Dropout is not used in the original CycleGAN paper.
         """
         parser.set_defaults(no_dropout=True)  # default CycleGAN did not use dropout
+        parser.add_argument(
+            "--spif_arch",
+            type=str,
+            choices=("v2", "legacy", "stack"),
+            default="v2",
+            help=(
+                "SPIF generator architecture: 'v2' uses single-stage spatial-"
+                "channel competitive fusion, 'legacy' uses the original "
+                "channel-only CCF, and "
+                "'stack' uses an unmodified ResNet generator"
+            ),
+        )
         if is_train:
             parser.add_argument("--lambda_A", type=float, default=10.0, help="weight for cycle loss (A -> B -> A)")
             parser.add_argument("--lambda_B", type=float, default=10.0, help="weight for cycle loss (B -> A -> B)")
@@ -59,16 +74,44 @@ class SPIFModel(BaseModel):
                 default=0.5,
                 help="use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1",
             )
-            parser.add_argument("--lambda_low_freq", type=float, default=0.5,
-                                help="weight for low-frequency intensity term in content loss "
-                                     "(prevents foreground/background inversion in early training)")
             parser.add_argument("--lambda_content", type=float, default=1.0,
                                 help="overall weight for SPIF content loss. Set to 0 to disable "
-                                     "the entire gradient-domain + low-freq loss (useful for fine-tuning)")
+                                     "the entire structure-preserving loss (useful for ablation or fine-tuning)")
+            parser.add_argument("--lambda_sp", type=float, default=1.0,
+                                help="initial weight of the early-training SPIF loss")
+            parser.add_argument(
+                "--lambda_intensity", "--lambda_low_freq",
+                dest="lambda_intensity", type=float, default=0.5,
+                help=(
+                    "relative weight of the coarse intensity-distribution term; "
+                    "--lambda_low_freq is retained as a compatibility alias"
+                ),
+            )
+            parser.add_argument(
+                "--sp_grad_decay_fraction", "--sp_decay_fraction",
+                dest="sp_grad_decay_fraction", type=float, default=0.1,
+                help=(
+                    "fraction of total epochs for fine-structure gradient guidance; "
+                    "--sp_decay_fraction is retained as a compatibility alias"
+                ),
+            )
+            parser.add_argument(
+                "--sp_intensity_decay_fraction", type=float, default=0.025,
+                help=(
+                    "fraction of total epochs for coarse intensity-distribution "
+                    "guidance; should normally be shorter than the gradient window"
+                ),
+            )
+            parser.add_argument(
+                "--intensity_pool_size", type=int, default=8,
+                help="coarse grid size used by the intensity-map correlation",
+            )
             parser.add_argument("--grad_channel_weights", type=float, nargs="+", default=None,
-                                help="per-channel weights for gradient fusion (arithmetic mean). "
+                                help="source-domain per-channel weights for gradient fusion and "
+                                     "the original-style intensity channel mean. "
                                      "e.g. '--grad_channel_weights 0.5 0.5' for equal weighting. "
-                                     "Weights are normalized to sum=1. Default: equal weights for all channels.")
+                                     "Weights must match input_nc and are normalized to sum=1. "
+                                     "Target-domain channels always use equal weights.")
 
         return parser
 
@@ -80,7 +123,12 @@ class SPIFModel(BaseModel):
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B", "content"]
+        self.loss_names = [
+            "D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B",
+            "cycle_B", "idt_B", "sp_grad_A", "sp_grad_B",
+            "sp_int_A", "sp_int_B", "sp_grad_weight", "sp_int_weight",
+            "content",
+        ]
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_A = ["real_A", "fake_B", "rec_A"]
         visual_names_B = ["real_B", "fake_A", "rec_B"]
@@ -103,15 +151,19 @@ class SPIFModel(BaseModel):
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
         netG_A_type = opt.netG
-        if opt.input_nc == 2 and netG_A_type == "resnet_9blocks":
-            netG_A_type = "spif_9blocks"
-        elif opt.input_nc == 2 and netG_A_type == "resnet_6blocks":
-            netG_A_type = "spif_6blocks"
         netG_B_type = opt.netG
-        if opt.input_nc == 2 and netG_B_type == "resnet_9blocks":
-            netG_B_type = "spif_dual_9blocks"
-        elif opt.input_nc == 2 and netG_B_type == "resnet_6blocks":
-            netG_B_type = "spif_dual_6blocks"
+        if opt.input_nc == 2 and opt.netG in (
+                "resnet_9blocks", "resnet_6blocks"):
+            n_blocks = "9blocks" if "9blocks" in opt.netG else "6blocks"
+            architecture = getattr(opt, "spif_arch", "v2")
+            if architecture == "v2":
+                netG_A_type = f"spif_v2_{n_blocks}"
+                netG_B_type = f"spif_dual_v2_{n_blocks}"
+            elif architecture == "legacy":
+                netG_A_type = f"spif_{n_blocks}"
+                netG_B_type = f"spif_dual_{n_blocks}"
+            elif architecture != "stack":
+                raise ValueError(f"Unsupported SPIF architecture: {architecture}")
         self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_A_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, netG_B_type, opt.norm, not opt.no_dropout, opt.init_type, opt.init_gain)
 
@@ -131,19 +183,103 @@ class SPIFModel(BaseModel):
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
-            self.lambda_low_freq = opt.lambda_low_freq
-            self.lambda_content = opt.lambda_content
-            # Normalize channel weights to sum=1; default to equal weights
-            if opt.grad_channel_weights is not None:
-                w = torch.tensor(opt.grad_channel_weights, dtype=torch.float32)
-                self.grad_channel_weights = w / w.sum()
-            else:
-                self.grad_channel_weights = None  # will be set per-input in grad_mag
+            self._init_content_loss_options(opt)
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
+            self.update_discriminators = True
+
+    def set_discriminator_updates(self, enabled):
+        """Enable or disable discriminator optimization during fine-tuning."""
+        self.update_discriminators = bool(enabled)
+        if not self.update_discriminators:
+            self.set_requires_grad([self.netD_A, self.netD_B], False)
+
+    def _init_content_loss_options(self, opt):
+        """Initialize and validate options shared by all SPIF loss variants."""
+        self.lambda_content = opt.lambda_content
+        self.lambda_sp = opt.lambda_sp
+        self.lambda_intensity = getattr(
+            opt, "lambda_intensity", getattr(opt, "lambda_low_freq", 0.5)
+        )
+        self.sp_grad_decay_fraction = getattr(
+            opt,
+            "sp_grad_decay_fraction",
+            getattr(opt, "sp_decay_fraction", 0.1),
+        )
+        self.sp_intensity_decay_fraction = getattr(
+            opt, "sp_intensity_decay_fraction", 0.025
+        )
+        self.intensity_pool_size = getattr(opt, "intensity_pool_size", 8)
+        self.grad_channel_weights = None
+        self.current_epoch = max(1, int(getattr(opt, "epoch_count", 1)))
+
+        for name, value in (
+            ("--lambda_content", self.lambda_content),
+            ("--lambda_sp", self.lambda_sp),
+            ("--lambda_intensity", self.lambda_intensity),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be a finite, non-negative value.")
+        for name, value in (
+            ("--sp_grad_decay_fraction", self.sp_grad_decay_fraction),
+            ("--sp_intensity_decay_fraction", self.sp_intensity_decay_fraction),
+        ):
+            if not math.isfinite(value) or not 0 < value <= 1:
+                raise ValueError(f"{name} must be in (0, 1].")
+        if self.sp_intensity_decay_fraction > self.sp_grad_decay_fraction:
+            raise ValueError(
+                "--sp_intensity_decay_fraction must not exceed "
+                "--sp_grad_decay_fraction."
+            )
+
+        self.sp_gradient_loss = FineStructureGradientLoss().to(self.device)
+        self.sp_intensity_loss = CoarseIntensityDistributionLoss(
+            pool_size=self.intensity_pool_size,
+        ).to(self.device)
+
+        if opt.grad_channel_weights is None:
+            return
+
+        w = torch.tensor(opt.grad_channel_weights, dtype=torch.float32)
+        if w.numel() != opt.input_nc:
+            raise ValueError(
+                "--grad_channel_weights describes source-domain channels and must "
+                f"contain input_nc={opt.input_nc} values, got {w.numel()}."
+            )
+        if not torch.isfinite(w).all():
+            raise ValueError("--grad_channel_weights must contain only finite values.")
+        if (w < 0).any() or w.sum() <= 0:
+            raise ValueError(
+                "--grad_channel_weights must be non-negative and have a positive sum."
+            )
+        self.grad_channel_weights = w / w.sum()
+
+    def set_current_epoch(self, epoch):
+        """Update the epoch-based SP schedule (identical across DDP ranks)."""
+        epoch = int(epoch)
+        if epoch < 1:
+            raise ValueError("Current epoch must be at least 1.")
+        self.current_epoch = epoch
+
+    def _effective_sp_weights(self):
+        total_epochs = int(self.opt.n_epochs + self.opt.n_epochs_decay)
+        gradient_schedule = frontloaded_cosine_decay(
+            self.current_epoch, total_epochs, self.sp_grad_decay_fraction
+        )
+        intensity_schedule = frontloaded_cosine_decay(
+            self.current_epoch,
+            total_epochs,
+            self.sp_intensity_decay_fraction,
+        )
+        common_weight = self.lambda_content * self.lambda_sp
+        gradient_weight = common_weight * gradient_schedule
+        intensity_weight = (
+            common_weight * self.lambda_intensity * intensity_schedule
+        )
+        return gradient_weight, intensity_weight
 
     def set_input(self, input):
         """Unpack input data from the dataloader and perform necessary pre-processing steps.
@@ -238,89 +374,63 @@ class SPIFModel(BaseModel):
         self.loss_G.backward()
 
     def content_loss(self):
-        """Structure-preserving loss in gradient domain + low-frequency anchor.
+        """Return independently scheduled fine-gradient and coarse-intensity terms.
 
-        Sobel gradient magnitude (edge-level) ensures texture/structural fidelity.
-        Gaussian-blurred L1 (low-frequency) prevents foreground/background
-        inversion by anchoring broad intensity distributions — critical in early
-        training when the generator has no absolute luminance reference.
-
-        Both terms decay exponentially from 15× to near zero over training.
+        The gradient term compares unnormalized Sobel magnitudes only at the
+        original image resolution to preserve fine structures. The intensity
+        term follows the original channel-mean and Gaussian-low-pass path, then
+        minimizes one minus the coarse normalized correlation. It guides the
+        large-scale distribution of bright and dark regions without matching
+        absolute brightness, and its faster epoch schedule removes the guidance
+        after the initial training stage.
         """
+        gradient_weight, intensity_weight = self._effective_sp_weights()
+        self.loss_sp_grad_weight = gradient_weight
+        self.loss_sp_int_weight = intensity_weight
+        zero = self.fake_B.new_zeros(())
 
-        def grad_mag(x):
-            """Per-channel Sobel gradient magnitudes, fused via weighted arithmetic mean.
+        if gradient_weight > 0:
+            # Source-domain channel weights apply to real_A in the forward
+            # direction and fake_A in the reverse direction. H&E channels use
+            # equal weights.
+            self.loss_sp_grad_A = self.sp_gradient_loss(
+                self.real_A,
+                self.fake_B,
+                source_weights=self.grad_channel_weights,
+            )
+            self.loss_sp_grad_B = self.sp_gradient_loss(
+                self.real_B,
+                self.fake_A,
+                translated_weights=self.grad_channel_weights,
+            )
+        else:
+            self.loss_sp_grad_A = zero
+            self.loss_sp_grad_B = zero
 
-            Uses scalar per-channel weights (default: equal weights) to combine
-            gradient magnitudes across channels:
+        if intensity_weight > 0:
+            # Match the original paper's channel averaging before low-pass
+            # filtering. AF is expected to have been inverted during dataset
+            # preparation so its foreground/background brightness arrangement
+            # is comparable to BF, as in the original preprocessing pipeline.
+            self.loss_sp_int_A = self.sp_intensity_loss(
+                self.real_A,
+                self.fake_B,
+                source_weights=self.grad_channel_weights,
+            )
+            self.loss_sp_int_B = self.sp_intensity_loss(
+                self.real_B,
+                self.fake_A,
+                translated_weights=self.grad_channel_weights,
+            )
+        else:
+            self.loss_sp_int_A = zero
+            self.loss_sp_int_B = zero
 
-              fused = Σ w_c * ||∇x_c||
-
-            Properties compared to geometric mean:
-            - Common boundaries (both channels strong) → reinforced by averaging.
-            - Single-channel noise → attenuated by its weight but won't zero out
-              the fused response (unlike geometric mean where one near-zero channel
-              kills the product).
-            - One channel blank / low-contrast → the other channel's gradient still
-              contributes proportionally to its weight.
-
-            weights are normalized to sum=1; default is equal weights for all channels.
-            """
-            kx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
-                              dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
-            ky = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
-                              dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
-
-            grads = []
-            for c in range(x.shape[1]):
-                xc = x[:, c:c + 1, :, :]
-                gx = F.conv2d(xc, kx, padding=1)
-                gy = F.conv2d(xc, ky, padding=1)
-                grads.append(torch.sqrt(gx ** 2 + gy ** 2 + 1e-6))
-
-            stacked = torch.cat(grads, dim=1)  # (B, C, H, W)
-
-            if stacked.shape[1] == 1:
-                return stacked  # single channel, no fusion needed
-
-            # Scalar per-channel weights, normalized to sum=1
-            if self.grad_channel_weights is not None:
-                w = self.grad_channel_weights.to(x.device)
-            else:
-                # Default: equal weights
-                w = torch.ones(stacked.shape[1], device=x.device) / stacked.shape[1]
-            w = w.view(1, -1, 1, 1)  # (1, C, 1, 1)
-
-            # Weighted arithmetic mean
-            return torch.sum(stacked * w, dim=1, keepdim=True)
-
-        def low_freq(x):
-            x_mean = torch.mean(x, dim=1, keepdim=True)
-            radius = 10
-            sigma = 5.0
-            coords = torch.arange(2 * radius + 1, dtype=torch.float32, device=x.device) - radius
-            g1d = torch.exp(-0.5 * (coords / sigma) ** 2)
-            g1d = g1d / g1d.sum()
-            kernel = (g1d[:, None] * g1d[None, :]).view(1, 1, 2 * radius + 1, 2 * radius + 1)
-            return F.conv2d(x_mean, kernel, padding=radius)
-
-        grad_real_A = grad_mag(self.real_A)
-        grad_fake_B = grad_mag(self.fake_B)
-        grad_fake_A = grad_mag(self.fake_A)
-        grad_real_B = grad_mag(self.real_B)
-
-        low_real_A = low_freq(self.real_A)
-        low_fake_B = low_freq(self.fake_B)
-        low_fake_A = low_freq(self.fake_A)
-        low_real_B = low_freq(self.real_B)
-
-        grad_loss_A = self.criterionCycle(grad_fake_B, grad_real_A)
-        grad_loss_B = self.criterionCycle(grad_fake_A, grad_real_B)
-        low_loss_A = self.criterionCycle(low_fake_B, low_real_A)
-        low_loss_B = self.criterionCycle(low_fake_A, low_real_B)
-
-        rate = 15 * np.exp(-(self.opt.counter / self.opt.data_size))
-        return rate * self.lambda_content * (grad_loss_A + grad_loss_B + self.lambda_low_freq * (low_loss_A + low_loss_B))
+        return gradient_weight * (
+            self.loss_sp_grad_A + self.loss_sp_grad_B
+        ) + intensity_weight * (
+            self.loss_sp_int_A + self.loss_sp_int_B
+        )
 
 
     def optimize_parameters(self):
@@ -333,6 +443,13 @@ class SPIFModel(BaseModel):
         self.backward_G()             # calculate gradients for G_A and G_B
         self.optimizer_G.step()       # update G_A and G_B's weights
         # D_A and D_B
+        if not self.update_discriminators:
+            # Keep the logged losses explicit instead of carrying values from a
+            # previous epoch. The discriminators remain usable in backward_G,
+            # but their parameters receive no gradients or optimizer updates.
+            self.loss_D_A = 0.0
+            self.loss_D_B = 0.0
+            return
         self.set_requires_grad([self.netD_A, self.netD_B], True)
         self.optimizer_D.zero_grad()   # set D_A and D_B's gradients to zero
         self.backward_D_A()      # calculate gradients for D_A

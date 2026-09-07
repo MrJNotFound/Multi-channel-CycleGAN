@@ -23,24 +23,29 @@ import sys
 
 if __name__ == "__main__":
 
-    sys.argv = [
-        "train_single.py",
-        "--dataroot", "./datasets/mouse_kidney_Trans_HE_UTOM_512",
-        "--name", "mouse_kidney_Trans_HE_256",
-        "--model", "cycle_gan",
-        "--dataset_mode", "unaligned",
-        "--input_nc", "3",
-        "--output_nc", "3",
-        "--lambda_identity", "0.5",
-        "--batch_size", "8",
-        "--n_epochs", "100",
-        "--n_epochs_decay", "100",
-        "--load_size", "286",
-        "--crop_size", "256",
-    ]
+    # Keep convenient IDE defaults, while allowing the GUI and normal CLI
+    # invocations to supply their own complete configuration.
+    if len(sys.argv) == 1:
+        sys.argv = [
+            "train_single.py",
+            "--dataroot", "./datasets/train_liver_single_AF_HE_512",
+            "--name", "liver_single_AF_HE_512_256",
+            "--model", "cycle_gan",
+            "--dataset_mode", "unaligned",
+            "--input_nc", "3",
+            "--output_nc", "3",
+            "--lambda_identity", "0.5",
+            "--batch_size", "8",
+            "--n_epochs", "100",
+            "--n_epochs_decay", "100",
+            "--load_size", "286",
+            "--crop_size", "256",
+            "--num_threads", "0",
+            "--gpu_ids", "0",
+        ]
 
     opt = TrainOptions().parse()
-    opt.device = init_ddp()
+    opt.device = init_ddp(opt.gpu_ids)
     dataset = create_dataset(opt)
     dataset_size = len(dataset)
     opt.data_size = dataset_size
@@ -50,13 +55,30 @@ if __name__ == "__main__":
     model.setup(opt)
     visualizer = Visualizer(opt)
     total_iters = (opt.epoch_count - 1) * dataset_size
-    for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):
+    configured_final_epoch = opt.n_epochs + opt.n_epochs_decay
+    final_epoch = configured_final_epoch
+    if opt.stop_after_epoch is not None:
+        if opt.stop_after_epoch < opt.epoch_count:
+            raise ValueError(
+                "--stop_after_epoch must be greater than or equal to "
+                "--epoch_count."
+            )
+        final_epoch = min(opt.stop_after_epoch, configured_final_epoch)
+        print(
+            f"This invocation will stop after epoch {final_epoch}; "
+            f"loss and learning-rate schedules remain configured for "
+            f"{configured_final_epoch} epochs."
+        )
+
+    for epoch in range(opt.epoch_count, final_epoch + 1):
         epoch_start_time = time.time()
         iter_data_time = time.time()
         epoch_iter = 0
         visualizer.reset()
         if hasattr(dataset, "set_epoch"):
             dataset.set_epoch(epoch)
+        if hasattr(model, "set_current_epoch"):
+            model.set_current_epoch(epoch)
 
         for i, data in enumerate(dataset):
             iter_start_time = time.time()
@@ -94,6 +116,12 @@ if __name__ == "__main__":
             model.save_networks("latest")
             model.save_networks(epoch)
 
-        print(f"End of epoch {epoch} / {opt.n_epochs + opt.n_epochs_decay} \t Time Taken: {time.time() - epoch_start_time:.0f} sec")
+        print(f"End of epoch {epoch} / {configured_final_epoch} \t Time Taken: {time.time() - epoch_start_time:.0f} sec")
+
+    if final_epoch < configured_final_epoch:
+        print(
+            f"Stopped after epoch {final_epoch} as requested "
+            f"(--stop_after_epoch={opt.stop_after_epoch})."
+        )
 
     cleanup_ddp()

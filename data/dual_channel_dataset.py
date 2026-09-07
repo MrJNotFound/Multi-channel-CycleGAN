@@ -67,7 +67,9 @@ class DualChannelDataset(BaseDataset):
 
     def __getitem__(self, index):
         # Domain A: load BF and AF, apply same spatial transform
-        A_bf_path, A_af_path = self.A_pairs[index]
+        # __len__ follows CycleGAN's max(A_size, B_size) convention, so wrap
+        # the shorter source domain instead of indexing past its final sample.
+        A_bf_path, A_af_path = self.A_pairs[index % self.A_size]
 
         img_bf = Image.open(A_bf_path).convert("L")
         img_af = Image.open(A_af_path).convert("L")

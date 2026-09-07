@@ -37,23 +37,38 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         sys.argv = [
             "train_dual.py",
-            "--dataroot", "./datasets/train_cancer_dual_512",
-            "--name", "cancer_dual_spif_256",
+            "--dataroot", "./datasets/train_liver_dual_BF_AF_HE_512",
+            "--name", "liver_dual_spif_v2_512_256",
             "--model", "spif",
+            "--spif_arch", "v2",
             "--dataset_mode", "dual_channel",
             "--input_nc", "2",
             "--output_nc", "3",
             "--lambda_identity", "0",
+            # V2 keeps separate BF/AF encoders through H/2, then uses a shared
+            # H/4 ResNet body. Batch 8 leaves safe headroom for the two cycle
+            # passes and both discriminators on a 48 GB GPU.
             "--batch_size", "8",
             "--n_epochs", "100",
             "--n_epochs_decay", "100",
             "--load_size", "286",
             "--crop_size", "256",
-            "--lambda_low_freq", "0.5",
+            "--gpu_ids", "0",
+            # Original-resolution gradients guide fine structures during the
+            # first 10% of training. Coarse intensity correlation guides the
+            # large-scale brightness distribution only at the beginning and
+            # reaches zero at 2.5% of total epochs.
+            "--lambda_sp", "10.0",
+            "--lambda_intensity", "0.5",
+            "--sp_grad_decay_fraction", "0.1",
+            "--sp_intensity_decay_fraction", "0.025",
+            "--intensity_pool_size", "8",
+            # "--epoch", "200"
+            # "--epoch_count", "201",
         ]
 
     opt = TrainOptions().parse()  # get training options
-    opt.device = init_ddp()
+    opt.device = init_ddp(opt.gpu_ids)
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     dataset_size = len(dataset)  # get the number of images in the dataset.
     opt.data_size = dataset_size
@@ -61,9 +76,39 @@ if __name__ == "__main__":
 
     model = create_model(opt)  # create a model given opt.model and other options
     model.setup(opt)  # regular setup: load and print networks; create schedulers
+
+    # Auto-detect resume epoch when continue_train
+    if opt.continue_train and opt.epoch_count == 1:
+        import re, glob
+        ckpt_dir = Path(opt.checkpoints_dir) / opt.name
+        epochs = set()
+        for f in glob.glob(str(ckpt_dir / "*_net_G_A.pth")):
+            m = re.match(r"(\d+)_net_", Path(f).name)
+            if m:
+                epochs.add(int(m.group(1)))
+        if epochs:
+            opt.epoch_count = max(epochs)
+            print(f"Auto-detected resume epoch: {opt.epoch_count} "
+                  f"(nearest save, actual may be -{opt.save_epoch_freq}+1 epochs)")
+
     visualizer = Visualizer(opt)  # create a visualizer that display/save images and plots
-    total_iters = (opt.epoch_count - 1) * dataset_size  # resume counter for content loss decay
-    for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):
+    total_iters = (opt.epoch_count - 1) * dataset_size
+    configured_final_epoch = opt.n_epochs + opt.n_epochs_decay
+    final_epoch = configured_final_epoch
+    if opt.stop_after_epoch is not None:
+        if opt.stop_after_epoch < opt.epoch_count:
+            raise ValueError(
+                "--stop_after_epoch must be greater than or equal to "
+                "--epoch_count."
+            )
+        final_epoch = min(opt.stop_after_epoch, configured_final_epoch)
+        print(
+            f"This invocation will stop after epoch {final_epoch}; "
+            f"loss and learning-rate schedules remain configured for "
+            f"{configured_final_epoch} epochs."
+        )
+
+    for epoch in range(opt.epoch_count, final_epoch + 1):
         epoch_start_time = time.time()  # timer for entire epoch
         iter_data_time = time.time()  # timer for data loading per iteration
         epoch_iter = 0  # the number of training iterations in current epoch, reset to 0 every epoch
@@ -71,6 +116,8 @@ if __name__ == "__main__":
         # Set epoch for DistributedSampler
         if hasattr(dataset, "set_epoch"):
             dataset.set_epoch(epoch)
+        if hasattr(model, "set_current_epoch"):
+            model.set_current_epoch(epoch)
 
         for i, data in enumerate(dataset):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
@@ -108,6 +155,12 @@ if __name__ == "__main__":
             model.save_networks("latest")
             model.save_networks(epoch)
 
-        print(f"End of epoch {epoch} / {opt.n_epochs + opt.n_epochs_decay} \t Time Taken: {time.time() - epoch_start_time:.0f} sec")
+        print(f"End of epoch {epoch} / {configured_final_epoch} \t Time Taken: {time.time() - epoch_start_time:.0f} sec")
+
+    if final_epoch < configured_final_epoch:
+        print(
+            f"Stopped after epoch {final_epoch} as requested "
+            f"(--stop_after_epoch={opt.stop_after_epoch})."
+        )
 
     cleanup_ddp()
