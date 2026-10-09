@@ -29,9 +29,7 @@ class GitignoreTests(unittest.TestCase):
             paths.extend(path.relative_to(ROOT).as_posix()
                          for path in (ROOT / directory).rglob("*.py")
                          if "__pycache__" not in path.parts)
-        paths.extend(["models/README.md", "training/train.py", "training/finetune.py",
-                      "training/train_single.py", "training/train_dual.py",
-                      "inference/infer.py", "inference/infer_single.py", "inference/infer_dual.py"])
+        paths.extend(["models/README.md", "training/train.py", "inference/infer.py"])
         self.assertEqual(ignored_paths(paths), set())
 
     def test_curated_docs_and_tools_are_trackable(self):
@@ -51,6 +49,8 @@ class GitignoreTests(unittest.TestCase):
                  "paper/manuscript.tex", "scripts/eval_cityscapes/evaluate.py",
                  "scripts/install_deps.sh", "run_ablation.py", "finetune.py", "train_spif_af.py",
                  "training/run_dual_5epoch_20runs.py", "training/train_cut_af.py",
+                 "training/train_single.py", "training/train_dual.py", "training/finetune.py",
+                 "inference/infer_single.py", "inference/infer_dual.py",
                  "training/train_spif_bf.py", "inference/infer_utom.py",
                  "docs/spif_v2/MANUSCRIPT_REMAINING_REVISIONS.md",
                  "docs/spif_v2/CMPB_SUBMISSION_REQUIREMENTS_AND_CHECKLIST.md",

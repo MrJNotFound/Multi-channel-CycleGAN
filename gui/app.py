@@ -43,8 +43,8 @@ from gui.launcher import (  # noqa: E402
     validate_configuration,
 )
 from models.registry import (
-    COMPONENT_LABELS, COMPONENT_TITLES, MODEL_SPECS, IMPLEMENTATIONS,
-    canonical_name, composition_candidates,
+    COMPONENT_LABELS, COMPONENT_TITLES, MODEL_SPECS, composition_candidates,
+    composition_errors,
 )
 
 
@@ -215,7 +215,7 @@ class ControlCenter(tk.Tk):
         self.init_var = tk.StringVar(value="fresh")
         self.module_var = tk.StringVar(value="cycle_gan_dual_fusion_structure")
         self.dataset_var = tk.StringVar(value="dual_channel")
-        self.module_display_var = tk.StringVar()
+        self.version_var = tk.StringVar(value="v2")
         self.component_vars = {name: tk.StringVar() for name in COMPONENT_LABELS}
         self.component_combos = {}
         self.dataset_display_var = tk.StringVar()
@@ -373,11 +373,13 @@ class ControlCenter(tk.Tk):
         self.dataset_combo.pack(fill="x", pady=(4, 0))
         self.dataset_combo.bind("<<ComboboxSelected>>", self.on_dataset_changed)
 
-        self.compat_frame = ttk.Frame(module_card, style="Surface.TFrame")
-        ttk.Label(self.compat_frame, text="兼容 / 自定义插件（不强行归类）", style="Field.TLabel").pack(anchor="w")
-        self.module_combo = ttk.Combobox(self.compat_frame, textvariable=self.module_display_var, state="readonly")
-        self.module_combo.pack(fill="x", pady=(4, 0))
-        self.module_combo.bind("<<ComboboxSelected>>", self.on_module_changed)
+        self.version_frame = ttk.Frame(selectors, style="Surface.TFrame")
+        self.version_frame.grid(row=2, column=1, sticky="ew", pady=(0, 10))
+        ttk.Label(self.version_frame, text="SPIF 版本：v1 通道 / v2 通道—空间", style="Field.TLabel").pack(anchor="w")
+        self.version_combo = ttk.Combobox(self.version_frame, textvariable=self.version_var,
+                                          values=("v1", "v2"), state="readonly")
+        self.version_combo.pack(fill="x", pady=(4, 0))
+        self.version_combo.bind("<<ComboboxSelected>>", self.on_version_changed)
 
         info = ttk.Frame(module_card, style="Soft.TFrame", padding=10)
         info.pack(fill="x", pady=(10, 0))
@@ -516,17 +518,13 @@ class ControlCenter(tk.Tk):
             label.grid(row=index // 2, column=index % 2, sticky="nsew", padx=3, pady=3)
             self.image_labels.append(label)
 
-    def module_display(self, name: str) -> str:
-        info = module_info(name)
-        return f"{info.label}   [{name}]"
-
     def dataset_display(self, name: str) -> str:
         info = dataset_info(name)
         return f"{info.label}   [{name}]"
 
     def _refresh_selectors(self) -> None:
-        spec = MODEL_SPECS.get(self.module_var.get())
-        display_spec = spec or MODEL_SPECS["cycle_gan_single_none_base"]
+        spec = MODEL_SPECS[self.module_var.get()]
+        display_spec = spec
         filters = {}
         for name, labels in COMPONENT_LABELS.items():
             candidates = composition_candidates(filters, self.model_names)
@@ -540,14 +538,11 @@ class ControlCenter(tk.Tk):
                     self.adapter_frame.grid()
                 else:
                     self.adapter_frame.grid_remove()
-        plugins = [name for name in self.model_names if name not in MODEL_SPECS]
-        self.module_display_map = {self.module_display(name): name for name in plugins}
-        self.module_combo.configure(values=list(self.module_display_map))
-        self.module_display_var.set(self.module_display(self.module_var.get()) if not spec else "")
-        if plugins:
-            self.compat_frame.pack(fill="x", pady=(10, 0))
+        self.version_var.set(str(self.values.get("spif_version", "v2")))
+        if spec.fusion == "fusion":
+            self.version_frame.grid()
         else:
-            self.compat_frame.pack_forget()
+            self.version_frame.grid_remove()
         datasets = discover_datasets(self.task_var.get())
         self.dataset_display_map = {self.dataset_display(name): name for name in datasets}
         self.dataset_combo.configure(values=list(self.dataset_display_map))
@@ -625,13 +620,12 @@ class ControlCenter(tk.Tk):
             self.init_frame.pack_forget()
         self.configure_schema(reset=False, preserved=keep)
 
-    def on_module_changed(self, _event=None) -> None:
+    def on_version_changed(self, _event=None) -> None:
         if self.running_guard():
+            self.version_var.set(str(self.values.get("spif_version", "v2")))
             return
-        selected = self.module_display_map.get(self.module_display_var.get())
-        if not selected:
-            return
-        self._select_module(selected)
+        self.values["spif_version"] = self.version_var.get()
+        self.schedule_refresh()
 
     def on_component_changed(self, changed: str) -> None:
         if self.running_guard():
@@ -664,6 +658,9 @@ class ControlCenter(tk.Tk):
             "save_epoch_freq",
         }
         keep = {key: value for key, value in self.values.items() if key in keep_names}
+        if (MODEL_SPECS[selected].fusion == "fusion"
+                and MODEL_SPECS[self.module_var.get()].fusion == "fusion"):
+            keep["spif_version"] = self.values.get("spif_version", "v2")
         self.module_var.set(selected)
         recommended_dataset = recommended_dataset_for(
             self.task_var.get(), selected
@@ -703,10 +700,9 @@ class ControlCenter(tk.Tk):
         info = module_info(self.module_var.get())
         data = dataset_info(self.dataset_var.get())
         self.module_title.configure(text=f"{info.family}  ·  {data.label}")
-        spec = MODEL_SPECS.get(self.module_var.get())
+        spec = MODEL_SPECS[self.module_var.get()]
         base_losses = {"cycle_gan": "GAN + 循环一致性 + 可选恒等", "cut": "GAN + PatchNCE", "pix2pix": "条件 GAN + L1"}
-        note = (f"基础损失：{base_losses[spec.architecture]}。额外损失在此基础上叠加。" if spec else
-                "兼容配置：保留旧实现和参数，不由名称推断四项分类；修改上方选择可切换到新组合。")
+        note = f"基础损失：{base_losses[spec.architecture]}。额外损失在此基础上叠加。"
         self.module_description.configure(text=f"{info.description}\n{note}\n{data.description}")
         layout = data.layout_train if self.task_var.get() == "train" else data.layout_inference
         layout_text = "需要的目录：" + ("   ".join(layout) if layout else "直接使用所选路径")
@@ -716,6 +712,7 @@ class ControlCenter(tk.Tk):
         if capture:
             self.capture_fields()
         self.field_vars = {}
+        self.version_var.set(str(self.values.get("spif_version", "v2")))
         for body in (self.essential_body, self.common_body, self.method_body):
             for child in body.winfo_children():
                 child.destroy()
@@ -743,6 +740,8 @@ class ControlCenter(tk.Tk):
 
     def _populate(self, parent: ttk.Frame, destinations) -> None:
         for dest in destinations:
+            if dest == "spif_version":
+                continue
             spec = self.spec_by_dest.get(dest)
             if not spec or dest in self.field_vars:
                 continue
@@ -892,11 +891,11 @@ class ControlCenter(tk.Tk):
             messagebox.showerror("无法读取权重配置", str(exc))
             return
 
-        saved_module = canonical_name(str(saved.get("model", self.module_var.get())), saved)
-        if not self._accept_loaded_module(saved_module):
+        saved_module = str(saved.get("model", ""))
+        if saved_module not in self.model_names or composition_errors(saved_module, saved):
             messagebox.showerror(
                 "模型模块不可用",
-                f"检查点使用模型 {saved_module!r}，但当前仓库未发现该模块。",
+                "权重配置不符合当前接口；请手动选择模型和 v1/v2 版本。权重文件无需重命名。",
             )
             return
 
@@ -986,7 +985,7 @@ class ControlCenter(tk.Tk):
         if not path:
             return
         payload = {
-            "schema": 3,
+            "schema": 4,
             "task": self.task_var.get(),
             "model_module": self.module_var.get(),
             "dataset_mode": self.dataset_var.get(),
@@ -1009,13 +1008,16 @@ class ControlCenter(tk.Tk):
             return
         try:
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
-            if payload.get("schema") not in {2, 3}:
-                raise ValueError("不支持的配置版本（支持 schema 2 / 3）。")
+            if payload.get("schema") != 4:
+                raise ValueError("请用新版界面重新保存配置（仅支持 schema 4），不再自动迁移旧配置。")
             task = payload["task"]
-            module = canonical_name(payload["model_module"], payload["values"])
+            module = payload["model_module"]
             dataset = payload["dataset_mode"]
             values = payload["values"]
-            if task not in {"train", "inference"} or not self._accept_loaded_module(module):
+            problems = composition_errors(module, {**values, "dataset_mode": dataset})
+            if problems:
+                raise ValueError("\n".join(problems))
+            if task not in {"train", "inference"} or module not in self.model_names:
                 raise ValueError("配置引用了当前仓库中不可用的任务或模型模块。")
             if payload.get("components") is not None and payload["components"] != MODEL_SPECS[module].components:
                 raise ValueError("配置中的模型名称与组成元素不一致。")
@@ -1032,14 +1034,6 @@ class ControlCenter(tk.Tk):
             self.init_frame.pack_forget()
         self.configure_schema(reset=False, preserved=values)
         self.set_status("配置已载入", "success")
-
-    def _accept_loaded_module(self, module: str) -> bool:
-        if module in self.model_names:
-            return True
-        if module in IMPLEMENTATIONS and module not in {"test", "template", "sincut"}:
-            self.model_names.append(module)
-            return True
-        return False
 
     def copy_command(self) -> None:
         value = self.command_text.get("1.0", "end-1c")

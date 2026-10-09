@@ -32,22 +32,17 @@
 !/.dockerignore
 !/.github/
 
-# Keep every registered implementation and compatibility adapter in models/.
-# CUT/UTOM/Pix2Pix are used by the catalogue and compatibility tests; ignoring
+# Keep every registered implementation in models/.
+# CUT/UTOM/Pix2Pix are used by the catalogue and composition tests; ignoring
 # them would silently remove GUI choices in a fresh clone.
 
-# Stable engines and compatibility entry points; no per-experiment launchers.
+# Only the two unified engines; no duplicate or per-experiment launchers.
 /training/*
 !/training/__init__.py
 !/training/train.py
-!/training/finetune.py
-!/training/train_single.py
-!/training/train_dual.py
 /inference/*
 !/inference/__init__.py
 !/inference/infer.py
-!/inference/infer_single.py
-!/inference/infer_dual.py
 
 # Curated preprocessing/postprocessing needed for virtual staining.
 # img_registrating_pair imports img_registrating_series: keep BOTH.

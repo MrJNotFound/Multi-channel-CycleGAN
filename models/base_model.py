@@ -153,11 +153,7 @@ class BaseModel(ABC):
         pass
 
     def parallelize(self):
-        """Wrap models in DataParallel (legacy single-machine multi-GPU).
-
-        Our DDP setup handles distribution via DistributedDataParallel in
-        setup(), so this is a no-op. Exists for CUT model API compatibility.
-        """
+        """Optional runtime hook; setup() already handles devices and DDP."""
         pass
 
     def compute_visuals(self):
@@ -181,7 +177,7 @@ class BaseModel(ABC):
         print(f"learning rate {old_lr:.7f} -> {lr:.7f}")
 
     def get_current_visuals(self):
-        """Return visualization images. train_dual.py will display these images with visdom, and save the images to a HTML"""
+        """Return visualization images for the unified training loop."""
         visual_ret = OrderedDict()
         for name in self.visual_names:
             if isinstance(name, str):
@@ -189,7 +185,7 @@ class BaseModel(ABC):
         return visual_ret
 
     def get_current_losses(self):
-        """Return traning losses / errors. train_dual.py will print out these errors on console, and save them to a file"""
+        """Return training losses for console, GUI and file logging."""
         errors_ret = OrderedDict()
         for name in self.loss_names:
             if isinstance(name, str):
@@ -223,28 +219,9 @@ class BaseModel(ABC):
                     # 3. Save the final, clean state_dict
                     torch.save(model_to_save.state_dict(), save_path)
 
-    def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
-        """Fix InstanceNorm checkpoints incompatibility (prior to 0.4)"""
-        key = keys[i]
-        if i + 1 == len(keys):  # at the end, pointing to a parameter/buffer
-            if module.__class__.__name__.startswith("InstanceNorm") and (key == "running_mean" or key == "running_var"):
-                if getattr(module, key) is None:
-                    state_dict.pop(".".join(keys))
-            if module.__class__.__name__.startswith("InstanceNorm") and (key == "num_batches_tracked"):
-                state_dict.pop(".".join(keys))
-        else:
-            try:
-                submodule = getattr(module, key)
-            except AttributeError:
-                # key from old checkpoint doesn't match current model structure;
-                # remove it so strict=False can handle the rest
-                state_dict.pop(".".join(keys), None)
-                return
-            self.__patch_instance_norm_state_dict(state_dict, submodule, keys, i + 1)
-
     @staticmethod
     def _validate_spif_checkpoint_architecture(net, state_dict, load_path):
-        """Prevent silent partial loading between legacy and V2 SPIF models."""
+        """Prevent silent partial loading between V1 and V2 SPIF models."""
         class_name = net.__class__.__name__
         keys = state_dict.keys()
         checkpoint_is_v2_forward = any(
@@ -265,7 +242,7 @@ class BaseModel(ABC):
         if class_name == "SPIFV2Generator" and not checkpoint_is_v2_forward:
             raise RuntimeError(
                 f"Checkpoint {load_path} is not a SPIF V2 forward generator. "
-                "Use --spif_arch legacy for an old checkpoint, or train a V2 "
+                "Use --spif_version v1 for an old checkpoint, or train a V2 "
                 "checkpoint before loading it."
             )
         if (class_name == "SPIFV2Generator"
@@ -280,37 +257,23 @@ class BaseModel(ABC):
         if class_name == "SPIFDualV2Generator" and not checkpoint_is_v2_reverse:
             raise RuntimeError(
                 f"Checkpoint {load_path} is not a SPIF V2 reverse generator. "
-                "Use --spif_arch legacy for an old checkpoint, or train a V2 "
+                "Use --spif_version v1 for an old checkpoint, or train a V2 "
                 "checkpoint before loading it."
             )
-        if class_name == "SPIFGenerator" and checkpoint_is_v2_forward:
+        if class_name == "SPIFV1Generator" and checkpoint_is_v2_forward:
             raise RuntimeError(
                 f"Checkpoint {load_path} contains a SPIF V2 generator, but the "
-                "current model uses --spif_arch legacy."
+                "current model uses --spif_version v1."
             )
-        if class_name == "SPIFDualGenerator" and checkpoint_is_v2_reverse:
+        if class_name == "SPIFDualV1Generator" and checkpoint_is_v2_reverse:
             raise RuntimeError(
                 f"Checkpoint {load_path} contains a SPIF V2 reverse generator, "
-                "but the current model uses --spif_arch legacy."
+                "but the current model uses --spif_version v1."
             )
 
     def _load_network_state(self, net, state_dict, load_path):
         self._validate_spif_checkpoint_architecture(net, state_dict, load_path)
-        for key in list(state_dict.keys()):
-            self.__patch_instance_norm_state_dict(
-                state_dict, net, key.split(".")
-            )
-        incompatible = net.load_state_dict(state_dict, strict=False)
-        if incompatible.missing_keys or incompatible.unexpected_keys:
-            print(
-                f"WARNING: non-strict checkpoint load for {load_path}: "
-                f"{len(incompatible.missing_keys)} missing keys, "
-                f"{len(incompatible.unexpected_keys)} unexpected keys."
-            )
-            if incompatible.missing_keys:
-                print("  missing:", incompatible.missing_keys[:10])
-            if incompatible.unexpected_keys:
-                print("  unexpected:", incompatible.unexpected_keys[:10])
+        net.load_state_dict(state_dict, strict=True)
 
     def load_networks(self, epoch):
         """Load all networks from the disk for DDP."""

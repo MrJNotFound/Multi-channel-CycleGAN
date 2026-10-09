@@ -142,7 +142,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         input_nc (int) -- the number of channels in input images
         output_nc (int) -- the number of channels in output images
         ngf (int) -- the number of filters in the last conv layer
-        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | spif_9blocks | spif_6blocks | spif_dual_9blocks | spif_dual_6blocks | spif_v2_9blocks | spif_v2_6blocks | spif_dual_v2_9blocks | spif_dual_v2_6blocks
+        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | spif_v1_9blocks | spif_v1_6blocks | spif_dual_v1_9blocks | spif_dual_v1_6blocks | spif_v2_9blocks | spif_v2_6blocks | spif_dual_v2_9blocks | spif_dual_v2_6blocks
         norm (str) -- the name of normalization layers used in the network: batch | instance | none
         use_dropout (bool) -- if use dropout layers.
         init_type (str)    -- the name of our initialization method.
@@ -166,14 +166,14 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     elif netG == "resnet_4blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout,
                               no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=4, opt=opt)
-    elif netG == "spif_9blocks":
-        net = SPIFGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
-    elif netG == "spif_6blocks":
-        net = SPIFGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
-    elif netG == "spif_dual_9blocks":
-        net = SPIFDualGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
-    elif netG == "spif_dual_6blocks":
-        net = SPIFDualGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == "spif_v1_9blocks":
+        net = SPIFV1Generator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+    elif netG == "spif_v1_6blocks":
+        net = SPIFV1Generator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == "spif_dual_v1_9blocks":
+        net = SPIFDualV1Generator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+    elif netG == "spif_dual_v1_6blocks":
+        net = SPIFDualV1Generator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "spif_v2_9blocks":
         net = SPIFV2Generator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
     elif netG == "spif_v2_6blocks":
@@ -530,7 +530,7 @@ class ChannelAttention(nn.Module):
         return self.fc(x)
 
 
-class SPIFFusion(nn.Module):
+class SPIFV1Fusion(nn.Module):
     """SPIF cross-channel fusion: BF/AF features exchange context via attention.
 
     BF features are modulated by channel attention derived from AF context,
@@ -555,16 +555,16 @@ class SPIFFusion(nn.Module):
         return fused + (feat_bf + feat_af)
 
 
-class SPIFGenerator(nn.Module):
+class SPIFV1Generator(nn.Module):
     """SPIF generator with dual encoder heads for BF and AF channels.
 
     Each modality independently encodes through a 7×7 conv and one
-    downsampling stage before SPIFFusion, giving the channel attention
+    downsampling stage before SPIFV1Fusion, giving the channel attention
     richer semantic features to work with.
 
     Architecture:
         BF (1,H,W) → Head_BF (7×7 + Down) → feat_BF @2ngf ─┐
-                                                              ├→ SPIFFusion → Shared Backbone → Output
+                                                              ├→ SPIFV1Fusion → Shared Backbone → Output
         AF (1,H,W) → Head_AF (7×7 + Down) → feat_AF @2ngf ─┘
 
     Only supports input_nc == 2 (one channel per modality).
@@ -572,7 +572,7 @@ class SPIFGenerator(nn.Module):
 
     def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d,
                  use_dropout=False, n_blocks=6, padding_type="reflect"):
-        assert input_nc == 2, f"SPIFGenerator requires input_nc=2, got {input_nc}"
+        assert input_nc == 2, f"SPIFV1Generator requires input_nc=2, got {input_nc}"
         super().__init__()
 
         if isinstance(norm_layer, functools.partial):
@@ -601,7 +601,7 @@ class SPIFGenerator(nn.Module):
         )
 
         # Cross-channel fusion at ngf*2 (deeper features, richer semantics)
-        self.fusion = SPIFFusion(ngf * 2, norm_layer=norm_layer)
+        self.fusion = SPIFV1Fusion(ngf * 2, norm_layer=norm_layer)
 
         # Shared backbone: one downsampling → ResBlocks → two upsamplings → output
         model = []
@@ -646,7 +646,7 @@ class SPIFGenerator(nn.Module):
         return self.backbone(fused)
 
 
-class SPIFDualGenerator(nn.Module):
+class SPIFDualV1Generator(nn.Module):
     """SPIF dual-output generator for the reverse direction (B → A).
 
     Shares a standard ResNet backbone but splits the final convolution into
@@ -658,7 +658,7 @@ class SPIFDualGenerator(nn.Module):
 
     def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d,
                  use_dropout=False, n_blocks=6, padding_type="reflect"):
-        assert output_nc == 2, f"SPIFDualGenerator requires output_nc=2, got {output_nc}"
+        assert output_nc == 2, f"SPIFDualV1Generator requires output_nc=2, got {output_nc}"
         super().__init__()
 
         if isinstance(norm_layer, functools.partial):

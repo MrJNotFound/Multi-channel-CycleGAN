@@ -3,11 +3,11 @@ import torch
 
 from models.base_model import BaseModel
 from models import networks
-from models.registry import legacy_name
+from models.registry import generator_names, model_spec
 
 
 class TestModel(BaseModel):
-    """This TesteModel can be used to generate CycleGAN results for only one direction.
+    """Generator-only inference for registered model compositions.
     This model will automatically set '--dataset_mode single', which only loads the images from one collection.
 
     See the test instruction for more details.
@@ -34,7 +34,7 @@ class TestModel(BaseModel):
         # new model plugin can be used by the unified inference entry without
         # adding another dedicated script.
         source_opt, _ = parser.parse_known_args()
-        source_model = getattr(source_opt, "source_model", "cycle_gan")
+        source_model = source_opt.source_model
         if source_model and source_model != "test":
             from models import get_option_setter
 
@@ -45,7 +45,7 @@ class TestModel(BaseModel):
             parser.add_argument(
                 "--model_suffix",
                 type=str,
-                default="",
+                default="_A" if model_spec(source_model).architecture == "cycle_gan" else "",
                 help=(
                     "network suffix in checkpoints_dir: "
                     "[epoch]_net_G[model_suffix].pth"
@@ -66,7 +66,8 @@ class TestModel(BaseModel):
         self.loss_names = []
         # specify the images you want to save/display. The training/test scripts  will call <BaseModel.get_current_visuals>
         self.dual_channel = (opt.input_nc == 2)
-        if legacy_name(getattr(opt, "source_model", "")) == "colorization":
+        self.spec = model_spec(opt.source_model)
+        if self.spec.adapter == "colorization":
             self.visual_names = ["real", "fake_rgb"]
         else:
             self.visual_names = (
@@ -76,30 +77,12 @@ class TestModel(BaseModel):
             )
         # specify the models you want to save to the disk. The training/test scripts will call <BaseModel.save_networks> and <BaseModel.load_networks>
         self.model_names = ["G" + opt.model_suffix]  # only generator is needed.
-        netG_type = opt.netG
-        source_model = legacy_name(getattr(opt, "source_model", "cycle_gan"))
-        self.source_model = source_model
-        # Generator selection is driven by the module that produced the
-        # checkpoint, not by which dedicated inference script happened to be
-        # launched. Stacked baselines therefore remain standard generators.
-        use_spif_fusion = source_model == "spif"
-        if use_spif_fusion:
-            if opt.input_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
-                n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
-                if opt.spif_arch == "v2":
-                    netG_type = f"spif_v2_{n_blocks}"
-                elif opt.spif_arch == "legacy":
-                    netG_type = f"spif_{n_blocks}"
-            elif opt.output_nc == 2 and netG_type in ("resnet_9blocks", "resnet_6blocks"):
-                n_blocks = "9blocks" if "9blocks" in netG_type else "6blocks"
-                if opt.spif_arch == "v2":
-                    netG_type = f"spif_dual_v2_{n_blocks}"
-                elif opt.spif_arch == "legacy":
-                    netG_type = f"spif_dual_{n_blocks}"
+        self.source_model = opt.source_model
+        netG_type, _ = generator_names(opt.source_model, vars(opt))
         norm_type = opt.norm
         no_antialias = True
         no_antialias_up = True
-        if source_model in {"cut", "cut_stack", "sincut"}:
+        if self.spec.architecture == "cut":
             norm_type = opt.normG if opt.normG else opt.norm
             no_antialias = opt.no_antialias
             no_antialias_up = opt.no_antialias_up
@@ -139,7 +122,7 @@ class TestModel(BaseModel):
 
     def result_image(self, batch_index=0):
         """Return one generated image using the source module's output adapter."""
-        if self.source_model == "colorization":
+        if self.spec.adapter == "colorization":
             return self._colorization_image(batch_index)
 
         from util import util
@@ -164,7 +147,7 @@ class TestModel(BaseModel):
         if self.dual_channel:
             self.real_bf = self.real[:, 0:1, :, :].repeat(1, 3, 1, 1)
             self.real_af = self.real[:, 1:2, :, :].repeat(1, 3, 1, 1)
-        if self.source_model == "colorization":
+        if self.spec.adapter == "colorization":
             converted = np.stack(
                 [self._colorization_image(index) for index in range(len(self.real))]
             )

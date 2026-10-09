@@ -15,13 +15,12 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from models.registry import (
-    COMPONENT_LABELS, MODEL_SPECS, IMPLEMENTATIONS,
-    canonical_name, composition_candidates, composition_errors, legacy_name,
+    COMPONENT_LABELS, MODEL_SPECS, composition_errors,
 )
 
 
@@ -70,227 +69,51 @@ class ModuleInfo:
     inference_dataset: str | None = None
 
 
-_LEGACY_GUIDES: dict[str, ModuleInfo] = {
-    "spif": ModuleInfo(
-        "spif",
-        "SPIF · 双通道融合",
-        "CycleGAN + 结构保持",
-        "BF 与 AF 分支编码并竞争融合，包含细结构梯度和粗粒度强度引导。",
-        "dual_channel",
-        {
-            "input_nc": 2,
-            "output_nc": 3,
-            "spif_arch": "v2",
-            "lambda_identity": 0,
-            "lambda_sp": 10.0,
-            "lambda_intensity": 0.5,
-            "sp_grad_decay_fraction": 0.1,
-            "sp_intensity_decay_fraction": 0.025,
-            "intensity_pool_size": 8,
-        },
-        (
-            "spif_arch",
-            "lambda_A",
-            "lambda_B",
-            "lambda_content",
-            "lambda_sp",
-            "lambda_intensity",
-            "sp_grad_decay_fraction",
-            "sp_intensity_decay_fraction",
-            "intensity_pool_size",
-            "grad_channel_weights",
-        ),
-    ),
-    "spif_single": ModuleInfo(
-        "spif_single",
-        "SPIF-Single · 单路结构保持",
-        "CycleGAN + 结构保持",
-        "标准单路 ResNet 生成器，保留 SPIF 的结构保持损失。",
-        "unaligned",
-        {"input_nc": 1, "output_nc": 3, "lambda_identity": 0},
-        (
-            "lambda_A",
-            "lambda_B",
-            "lambda_content",
-            "lambda_sp",
-            "lambda_intensity",
-            "sp_grad_decay_fraction",
-        ),
-    ),
-    "spif_stack": ModuleInfo(
-        "spif_stack",
-        "SPIF-Stack · 双通道堆叠",
-        "CycleGAN + 结构保持",
-        "BF 与 AF 直接堆叠进入标准 ResNet，用于融合架构消融。",
-        "dual_channel",
-        {
-            "input_nc": 2,
-            "output_nc": 3,
-            "spif_arch": "stack",
-            "lambda_identity": 0,
-        },
-        (
-            "lambda_A",
-            "lambda_B",
-            "lambda_content",
-            "lambda_sp",
-            "lambda_intensity",
-        ),
-    ),
-    "cycle_gan": ModuleInfo(
-        "cycle_gan",
-        "CycleGAN · 标准双向转换",
-        "CycleGAN",
-        "标准循环一致性 GAN，适用于无配对的单路或 RGB 图像。",
-        "unaligned",
-        {"input_nc": 3, "output_nc": 3},
-        ("lambda_A", "lambda_B", "lambda_identity", "gan_mode", "pool_size"),
-    ),
-    "cycle_gan_stack": ModuleInfo(
-        "cycle_gan_stack",
-        "CycleGAN-Stack · 双通道基线",
-        "CycleGAN",
-        "将 BF 与 AF 直接堆叠，使用标准 CycleGAN 生成器。",
-        "dual_channel",
-        {"input_nc": 2, "output_nc": 3, "lambda_identity": 0},
-        ("lambda_A", "lambda_B", "lambda_identity", "gan_mode", "pool_size"),
-    ),
-    "cycle_gan_fusion": ModuleInfo(
-        "cycle_gan_fusion",
-        "旧名称 cycle_gan_fusion（实际无融合）",
-        "CycleGAN",
-        "仅为 CycleGAN 别名，当前实现是标准生成器，不包含跨类特征融合。",
-        "dual_channel",
-        {"input_nc": 2, "output_nc": 3, "lambda_identity": 0},
-        ("lambda_A", "lambda_B", "lambda_identity"),
-    ),
-    "pix2pix": ModuleInfo(
-        "pix2pix",
-        "Pix2Pix · 配对监督",
-        "Conditional GAN",
-        "使用左右拼接的成对图像和 L1 监督训练单向生成器。",
-        "aligned",
-        {"input_nc": 3, "output_nc": 3},
-        ("lambda_L1", "gan_mode", "netG", "norm"),
-        "",
-    ),
-    "cut": ModuleInfo(
-        "cut",
-        "CUT · 对比学习单向转换",
-        "PatchNCE",
-        "使用 PatchNCE 代替循环一致性；统一引擎会自动执行首批数据初始化。",
-        "unaligned",
-        {
-            "input_nc": 3,
-            "output_nc": 3,
-            "CUT_mode": "CUT",
-            "no_dropout": True,
-        },
-        (
-            "CUT_mode",
-            "lambda_GAN",
-            "lambda_NCE",
-            "nce_idt",
-            "nce_layers",
-            "nce_T",
-            "num_patches",
-            "netF",
-        ),
-        "",
-    ),
-    "cut_stack": ModuleInfo(
-        "cut_stack",
-        "CUT-Stack · 双通道对比学习",
-        "PatchNCE",
-        "BF 与 AF 堆叠输入的 CUT 基线，自动关闭不适用的恒等 NCE。",
-        "dual_channel",
-        {
-            "input_nc": 2,
-            "output_nc": 3,
-            "CUT_mode": "CUT",
-            "nce_idt": False,
-            "no_dropout": True,
-        },
-        (
-            "CUT_mode",
-            "lambda_GAN",
-            "lambda_NCE",
-            "nce_layers",
-            "nce_T",
-            "num_patches",
-            "netF",
-        ),
-        "",
-    ),
-    "utom": ModuleInfo(
-        "utom",
-        "UTOM · 显著性约束",
-        "CycleGAN + 阈值内容损失",
-        "在 CycleGAN 上加入基于强度阈值的组织显著性内容损失。",
-        "unaligned",
-        {"input_nc": 3, "output_nc": 3, "netG": "unet_256"},
-        (
-            "threshold_A",
-            "threshold_B",
-            "domain_A_tissue",
-            "lambda_content",
-            "lambda_identity",
-        ),
-    ),
-    "utom_stack": ModuleInfo(
-        "utom_stack",
-        "UTOM-Stack · 双通道显著性约束",
-        "CycleGAN + 阈值内容损失",
-        "BF 与 AF 堆叠输入的 UTOM 基线。",
-        "dual_channel",
-        {
-            "input_nc": 2,
-            "output_nc": 3,
-            "netG": "unet_256",
-            "lambda_identity": 0,
-        },
-        (
-            "threshold_A",
-            "threshold_B",
-            "domain_A_tissue",
-            "lambda_content",
-            "lambda_identity",
-        ),
-    ),
-    "colorization": ModuleInfo(
-        "colorization",
-        "Colorization",
-        "Pix2Pix colorization",
-        "Lab 色彩空间的图像着色模块。",
-        "colorization",
-        {"input_nc": 1, "output_nc": 2, "netG": "unet_256", "norm": "batch"},
-        ("netG", "norm"),
-        "",
-    ),
-}
+def _module_info(spec) -> ModuleInfo:
+    """UI guidance comes from composition dimensions, not historical aliases."""
+    recommendations = {"output_nc": 3, **spec.defaults}
+    if spec.architecture == "cycle_gan":
+        featured = ("lambda_A", "lambda_B", "lambda_identity", "gan_mode", "pool_size")
+        description = "双向循环一致性训练。"
+    elif spec.architecture == "cut":
+        recommendations.update(CUT_mode="CUT", no_dropout=True)
+        featured = ("CUT_mode", "lambda_GAN", "lambda_NCE", "nce_idt", "nce_layers", "nce_T", "num_patches", "netF")
+        description = "使用 PatchNCE 的单向对比学习，自动执行首批数据初始化。"
+    else:
+        featured = ("lambda_L1", "gan_mode", "netG", "norm")
+        description = "配对监督图像转换。"
+    if spec.extra_loss == "structure":
+        featured += ("lambda_content", "lambda_sp", "lambda_intensity",
+                     "sp_grad_decay_fraction", "sp_intensity_decay_fraction",
+                     "intensity_pool_size", "grad_channel_weights")
+        description += " 加入原尺寸梯度与粗粒度强度引导。"
+        if spec.fusion == "fusion":
+            recommendations.update(lambda_sp=10.0, lambda_intensity=0.5,
+                                   sp_grad_decay_fraction=0.1, sp_intensity_decay_fraction=0.025,
+                                   intensity_pool_size=8)
+    elif spec.extra_loss == "saliency":
+        recommendations["netG"] = "unet_256"
+        featured += ("threshold_A", "threshold_B", "domain_A_tissue")
+        description += " 加入 UTOM 阈值内容保持。"
+    if spec.fusion == "fusion":
+        description += " SPIF v1 为通道融合，v2 为通道—空间融合。"
+        recommendations["spif_version"] = "v2"
+    if spec.adapter == "colorization":
+        recommendations.update(netG="unet_256", norm="batch")
+        description = "Lab 色彩空间的 L → ab 配对着色。"
+    dataset = ("colorization" if spec.adapter == "colorization" else
+               "dual_channel" if spec.modalities == "dual" else
+               "aligned" if spec.architecture == "pix2pix" else "unaligned")
+    label = " / ".join(COMPONENT_LABELS[part][spec.components[part]]
+                       for part in ("architecture", "modalities", "fusion", "extra_loss"))
+    if spec.adapter == "colorization":
+        label += " / Lab 着色"
+    return ModuleInfo(spec.key, label, COMPONENT_LABELS["architecture"][spec.architecture],
+                      description, dataset, recommendations, featured,
+                      "_A" if spec.architecture == "cycle_gan" else "")
 
 
-MODULES: dict[str, ModuleInfo] = {}
-for _key, _spec in MODEL_SPECS.items():
-    _guide = _LEGACY_GUIDES[_spec.legacy_name]
-    _label = " / ".join(COMPONENT_LABELS[part][_spec.components[part]] for part in (
-        "architecture", "modalities", "fusion", "extra_loss"
-    ))
-    _featured = _guide.featured
-    _description = _guide.description
-    if _spec.fusion != "fusion":
-        _featured = tuple(name for name in _featured if name != "spif_arch")
-    if _spec.fusion == "fusion" and _spec.extra_loss == "base":
-        _featured = ("spif_arch", "lambda_A", "lambda_B", "lambda_identity")
-        _description = "使用已有 SPIF 双分支融合生成器，将 lambda_content 设为 0，仅保留 CycleGAN 基础损失。"
-    if _spec.adapter == "colorization":
-        _label += " / Lab 着色"
-    MODULES[_key] = replace(
-        _guide, key=_key, label=_label,
-        family=COMPONENT_LABELS["architecture"][_spec.architecture],
-        description=_description, featured=_featured,
-        recommendations={**_guide.recommendations, **_spec.defaults},
-    )
+MODULES = {name: _module_info(spec) for name, spec in MODEL_SPECS.items()}
 
 
 @dataclass(frozen=True)
@@ -415,7 +238,7 @@ SECTION_FIELDS = {
         "no_antialias_up",
         "init_type",
         "init_gain",
-        "spif_arch",
+        "spif_version",
     },
     "优化与损失": {
         "n_epochs",
@@ -493,7 +316,7 @@ LABELS = {
     "no_antialias_up": "关闭上采样抗锯齿",
     "init_type": "权重初始化",
     "init_gain": "初始化增益",
-    "spif_arch": "SPIF 架构",
+    "spif_version": "SPIF 版本（v1 / v2）",
     "n_epochs": "恒定学习率 Epoch",
     "n_epochs_decay": "衰减 Epoch",
     "epoch_count": "起始 Epoch",
@@ -587,17 +410,7 @@ RECOMMENDED_COMMON = {
 
 
 def module_info(name: str) -> ModuleInfo:
-    if name in MODULES:
-        return MODULES[name]
-    if name in _LEGACY_GUIDES:
-        return _LEGACY_GUIDES[name]
-    return ModuleInfo(
-        name,
-        name.replace("_", " ").title(),
-        "仓库插件",
-        "由仓库动态发现的模型模块。专用参数来自模块自己的命令行钩子。",
-        "unaligned",
-    )
+    return MODULES[name]
 
 
 def recommended_dataset_for(task: str, model_module: str) -> str:
@@ -655,11 +468,6 @@ def discover_models() -> list[str]:
 
     names = []
     candidates = list(MODEL_SPECS)
-    for path in sorted((ROOT / "models").glob("*_model.py")):
-        name = path.stem.removesuffix("_model")
-        if name == "base" or name in IMPLEMENTATIONS:
-            continue
-        candidates.append(name)
     for name in candidates:
         try:
             models.get_option_setter(name)
@@ -1112,7 +920,7 @@ def validate_configuration(
             errors.append("恒等映射损失权重必须是数字。")
         if input_nc != output_nc and identity_weight > 0:
             warnings.append("输入输出通道不同，模型会自动关闭恒等映射损失。")
-        if legacy_name(model_module) == "cut_stack" and coerce_bool(values.get("nce_idt")):
+        if model_module == "cut_dual_stack_base" and coerce_bool(values.get("nce_idt")):
             errors.append("CUT-Stack 的输入输出通道不同，不能启用恒等 NCE。")
 
         for field_name in ("n_epochs", "n_epochs_decay"):

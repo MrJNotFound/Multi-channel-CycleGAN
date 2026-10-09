@@ -5,10 +5,10 @@
 
 ## 保留
 
-- `models/`：SPIF 主方法、单类/Stack 消融、CycleGAN 基线、已注册的 CUT/UTOM/Pix2Pix 实现、独立损失、注册表与兼容适配。后几项也是界面和兼容测试的一部分，不能只忽略其文件而保留注册记录。
+- `models/`：SPIF 主方法、单类/Stack 消融、CycleGAN 基线、已注册的 CUT/UTOM/Pix2Pix 实现及注册表。模型专用损失内置于对应模型文件。后几项也是界面和组合测试的一部分，不能只忽略其文件而保留注册记录。
 - `data/`、`options/`、`util/`：数据加载源码、参数接口与运行支撑；注意 `data/` 是源码，`datasets/` 才是本地数据。
 - `gui/`、`launch_gui.py` 与 `tests/`：交互界面、启动器和回归测试。
-- `training/train.py`、`training/finetune.py`、`inference/infer.py`：通用入口；保留原 `train_single/dual.py` 与 `infer_single/dual.py` 兼容入口。
+- `training/train.py`、`inference/infer.py`：仅保留两个通用入口，续训与微调共用训练入口。重复入口与旧导入兼容已从源码删除，可从 Git 历史恢复。
 - `tool/` 中明确放行的数据组织、切块/拼接、BF/AF 反相与配准、归一化、去噪、ROI/阈值处理、评价及损失可视化工具。成对配准依赖 `img_registrating_series.py`，两者一并保留。
 - 项目说明、许可证、GUI 使用文档、模型命名说明、SPIF 架构说明与示意图，以及未来添加的依赖清单和 CI 配置。
 

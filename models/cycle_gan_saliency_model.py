@@ -11,7 +11,7 @@ https://www.nature.com/articles/s41377-021-00484-y
 
 import torch
 import numpy as np
-from models.cycle_gan.standard import CycleGANModel
+from models.cycle_gan_model import CycleGANModel
 
 
 class UTOMModel(CycleGANModel):
@@ -21,7 +21,9 @@ class UTOMModel(CycleGANModel):
     a content preservation term that matches intensity-thresholded tissue
     masks between source and translated images.
 
-    Usage: --model utom
+    Single-source and dual-source Stack inputs share this implementation.
+    Select cycle_gan_single_none_saliency or cycle_gan_dual_stack_saliency;
+    the composition configures the dataset and input channels.
     """
 
     @staticmethod

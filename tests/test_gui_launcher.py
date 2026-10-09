@@ -185,11 +185,11 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(args, ["--enabled", "False"])
 
     def test_training_command_uses_unified_engine_and_plugins(self):
-        values = default_values("train", "spif", "dual_channel")
+        values = default_values("train", "cycle_gan_dual_fusion_structure", "dual_channel")
         values.update({"dataroot": "datasets/sample", "name": "sample_run"})
 
         command = build_command(
-            "train", "spif", "dual_channel", values, "python"
+            "train", "cycle_gan_dual_fusion_structure", "dual_channel", values, "python"
         )
 
         self.assertTrue(
@@ -199,7 +199,7 @@ class LauncherTests(unittest.TestCase):
             command[-5:],
             [
                 "--model",
-                "spif",
+                "cycle_gan_dual_fusion_structure",
                 "--dataset_mode",
                 "dual_channel",
                 "--gui_events",
@@ -208,11 +208,11 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("train_dual.py", " ".join(command))
 
     def test_inference_separates_source_module_from_runner(self):
-        values = default_values("inference", "cut_stack", "dual_channel")
+        values = default_values("inference", "cut_dual_stack_base", "dual_channel")
         values.update({"dataroot": "datasets/sample", "name": "sample_run"})
 
         command = build_command(
-            "inference", "cut_stack", "dual_channel", values, "python"
+            "inference", "cut_dual_stack_base", "dual_channel", values, "python"
         )
 
         self.assertTrue(
@@ -220,7 +220,7 @@ class LauncherTests(unittest.TestCase):
         )
         self.assertEqual(command[command.index("--model") + 1], "test")
         self.assertEqual(
-            command[command.index("--source_model") + 1], "cut_stack"
+            command[command.index("--source_model") + 1], "cut_dual_stack_base"
         )
         self.assertEqual(
             command[command.index("--dataset_mode") + 1], "dual_channel"
@@ -228,13 +228,13 @@ class LauncherTests(unittest.TestCase):
 
     def test_task_specific_dataset_guidance_is_not_a_lock(self):
         self.assertEqual(
-            recommended_dataset_for("train", "cycle_gan"), "unaligned"
+            recommended_dataset_for("train", "cycle_gan_single_none_base"), "unaligned"
         )
         self.assertEqual(
-            recommended_dataset_for("inference", "cycle_gan"), "single"
+            recommended_dataset_for("inference", "cycle_gan_single_none_base"), "single"
         )
         self.assertEqual(
-            recommended_dataset_for("inference", "spif"), "dual_channel"
+            recommended_dataset_for("inference", "cycle_gan_dual_fusion_structure"), "dual_channel"
         )
 
     def test_validation_accepts_fresh_modular_training(self):
@@ -242,11 +242,11 @@ class LauncherTests(unittest.TestCase):
             root = Path(directory)
             (root / "trainA").mkdir()
             (root / "trainB").mkdir()
-            values = default_values("train", "cycle_gan", "unaligned")
+            values = default_values("train", "cycle_gan_single_none_base", "unaligned")
             values.update({"dataroot": str(root), "name": "experiment"})
 
             report = validate_configuration(
-                "train", "cycle_gan", "unaligned", "fresh", values
+                "train", "cycle_gan_single_none_base", "unaligned", "fresh", values
             )
 
         self.assertEqual(report.errors, ())
@@ -256,7 +256,7 @@ class LauncherTests(unittest.TestCase):
             root = Path(directory)
             (root / "train_opt.txt").write_text(
                 "----------------- Options ---------------\n"
-                "                    model: spif\n"
+                "                    model: cycle_gan_dual_fusion_structure\n"
                 "                 input_nc: 2\n"
                 "                no_dropout: True\t[default: False]\n"
                 "                   gpu_ids: [0]\n"
@@ -266,7 +266,7 @@ class LauncherTests(unittest.TestCase):
 
             values = load_checkpoint_configuration(root)
 
-        self.assertEqual(values["model"], "spif")
+        self.assertEqual(values["model"], "cycle_gan_dual_fusion_structure")
         self.assertEqual(values["input_nc"], 2)
         self.assertIs(values["no_dropout"], True)
         self.assertEqual(values["gpu_ids"], [0])

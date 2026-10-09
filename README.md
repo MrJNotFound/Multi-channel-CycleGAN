@@ -10,11 +10,14 @@ Git 保留范围、忽略规则和本地文件说明见 [`docs/REPOSITORY_SCOPE.
 Multi-layer-CycleGAN/
 ├── models/                     # 模型定义
 │   ├── registry.py            # 架构 / 输入类别 / 融合 / 额外损失组合
-│   ├── cycle_gan/             # 标准、Stack、结构保持和阈值内容保持
-│   ├── cut/                   # CUT、双类 Stack 与单图实验扩展
-│   ├── pix2pix/               # 配对监督与 Lab 着色适配
-│   ├── losses/                # 结构损失、强度损失、PatchNCE
-│   ├── runtime/               # 生成器推理适配
+│   ├── cycle_gan_model.py      # 基础 CycleGAN，单类与 Stack 共用
+│   ├── cycle_gan_saliency_model.py # 阈值内容保持
+│   ├── cycle_gan_structure_model.py # SPIF 融合，内含结构与强度损失
+│   ├── cut_model.py            # CUT / FastCUT，内含 PatchNCE 损失
+│   ├── pix2pix_model.py        # 配对监督
+│   ├── pix2pix_colorization_model.py # Lab 着色适配
+│   ├── test_model.py          # 通用生成器推理
+│   ├── template_model.py      # 模型开发模板
 │   ├── networks.py             # 生成器 / 判别器 / SPIF 双分支融合网络
 │   └── base_model.py           # 抽象基类
 ├── data/                       # 数据加载
@@ -40,7 +43,7 @@ Multi-layer-CycleGAN/
 
 ### 1. SPIF V2 生成器（SPIFV2Generator）
 
-`--model spif --spif_arch v2` 使用单阶段空间—通道竞争融合结构：
+`--model cycle_gan_dual_fusion_structure --spif_version v2` 使用单阶段空间—通道竞争融合结构：
 
 ```
 BF → 独立编码器 ─┐
@@ -52,7 +55,7 @@ AF → 独立编码器 ─┘
 - **共享语义编码**：融合结果经共享下采样进入 `H/4` ResNet 主干，避免从已融合特征重复构造并再次融合两条高度相关的分支
 - **结构跳连**：`H/2` 融合特征直接参与解码，减少细边缘经过瓶颈后的损失
 - **改进反向生成器**：共享 H&E 编码和低分辨率语义，从 `H/2` 开始使用独立 BF/AF 解码器
-- **兼容旧结构**：`--spif_arch legacy` 使用原单尺度 CCF；`--spif_arch stack` 使用标准堆叠 ResNet
+- **两个明确版本**：`--spif_version v1` 为通道融合，`v2` 为通道—空间融合；Stack 由独立组合选择，不是版本参数。
 
 ### 2. SPIF 模型
 
@@ -97,7 +100,7 @@ python training/train.py \
     --dataroot ./datasets/mouse_kidney_dual_BF_AF_HE \
     --name mouse_kidney_dual_BF_AF_HE_v2 \
     --model cycle_gan_dual_fusion_structure \
-    --spif_arch v2 \
+    --spif_version v2 \
     --dataset_mode dual_channel \
     --input_nc 2 \
     --output_nc 3 \
@@ -126,7 +129,7 @@ python inference/infer.py \
     --source_model cycle_gan_dual_fusion_structure \
     --model_suffix _A \
     --dataset_mode dual_channel \
-    --spif_arch v2 \
+    --spif_version v2 \
     --input_nc 2 \
     --output_nc 3 \
     --no_dropout \
@@ -138,19 +141,19 @@ python inference/infer.py \
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--model` | `cycle_gan` | 新命名为架构_类别_融合_额外损失；旧 `spif` / `cycle_gan` 等名称兼容 |
+| `--model` | `cycle_gan_single_none_base` | 架构_类别_融合_额外损失，仅支持注册组合 |
 | `--dataset_mode` | `unaligned` | 数据集模式：`dual_channel` / `unaligned` / `aligned` |
 | `--input_nc` | `3` | 输入通道数：`2`=双通道 BF+AF, `3`=RGB, `1`=灰度 |
 | `--output_nc` | `3` | 输出通道数 |
-| `--netG` | `resnet_9blocks` | SPIF 根据 `--spif_arch` 自动选择对应的前向和反向生成器 |
-| `--spif_arch` | `v2` | `v2`=单阶段空间—通道竞争融合，`legacy`=原始通道 CCF，`stack`=标准堆叠 ResNet |
+| `--netG` | `resnet_9blocks` | SPIF 根据 `--spif_version` 自动选择对应的前向和反向生成器 |
+| `--spif_version` | `v2` | `v1`=通道融合，`v2`=通道—空间融合；仅 Fusion 组合使用 |
 | `--lambda_A/B` | `10.0` | 循环一致性损失权重 |
 | `--lambda_identity` | `0.5` | 身份映射损失权重（input_nc ≠ output_nc 时自动禁用） |
 | `--lambda_content` | `1.0` | SP loss 总倍率；设为 0 可关闭整个 SP loss |
 | `--lambda_sp` | `1.0` | SPIF 结构保持损失的初始强度 |
-| `--lambda_intensity` | `0.5` | 粗粒度组织明暗分布项相对权重；`--lambda_low_freq` 保留为兼容别名 |
+| `--lambda_intensity` | `0.5` | 粗粒度组织明暗分布项相对权重 |
 | `--grad_channel_weights` | 等权 | BF/AF 在梯度融合及强度通道均值中的权重，例如 `0.5 0.5` |
-| `--sp_grad_decay_fraction` | `0.1` | 原尺寸细微结构梯度引导的总 epoch 比例；`--sp_decay_fraction` 保留为兼容别名 |
+| `--sp_grad_decay_fraction` | `0.1` | 原尺寸细微结构梯度引导的总 epoch 比例 |
 | `--sp_intensity_decay_fraction` | `0.025` | 粗粒度组织明暗分布引导的总 epoch 比例，应短于梯度窗口 |
 | `--intensity_pool_size` | `8` | 粗粒度强度相关性使用的网格尺寸 |
 | `--gan_mode` | `lsgan` | GAN 目标函数：`lsgan` / `vanilla` / `wgangp` |

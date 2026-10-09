@@ -1,48 +1,36 @@
-"""Model factory for explicit compositions, legacy names and custom plugins.
+"""Model factory for explicitly registered compositions.
 
-Implementations are grouped by architecture; independent losses live in losses/.
-See registry.py and README.md for naming and examples/template.py for the model
-interface. Old models/<name>_model imports remain lazily compatible.
+Implementations use architecture-prefixed filenames and contain their own losses.
+See registry.py and README.md for naming and template_model.py for the model
+interface. Runtime implementations are never exposed as command-line aliases.
 """
 
 import importlib
-from models.base_model import BaseModel
-from .registry import IMPLEMENTATIONS, MODEL_SPECS, composition_errors, legacy_name
-from .compat import install_legacy_imports
-
-install_legacy_imports()
+from .registry import IMPLEMENTATIONS, composition_errors, model_spec
 
 
 def find_model_using_name(model_name: str):
-    """Resolve a registered composition/alias, then try the old plugin convention."""
-    implementation = IMPLEMENTATIONS.get(legacy_name(model_name))
-    if implementation:
-        module_path, class_name = implementation
-        return getattr(importlib.import_module(module_path), class_name)
-
-    model_filename = "models." + model_name + "_model"
-    modellib = importlib.import_module(model_filename)
-    model = None
-    target_model_name = model_name.replace("_", "") + "model"
-    for name, cls in modellib.__dict__.items():
-        if name.lower() == target_model_name.lower() and isinstance(cls, type) and issubclass(cls, BaseModel):
-            model = cls
-
-    if model is None:
-        raise ImportError(f"{model_filename} must define a BaseModel subclass named {target_model_name}.")
-
-    return model
+    """Resolve a registered composition or the generator-only inference runner."""
+    if model_name == "test":
+        from .test_model import TestModel
+        return TestModel
+    spec = model_spec(model_name)
+    module_path, class_name = IMPLEMENTATIONS[spec.implementation]
+    return getattr(importlib.import_module(module_path), class_name)
 
 
 def get_option_setter(model_name: str):
     """Return the static method <modify_commandline_options> of the model class."""
     model_class = find_model_using_name(model_name)
-    spec = MODEL_SPECS.get(model_name)
-    if spec is None:
+    if model_name == "test":
         return model_class.modify_commandline_options
+    spec = model_spec(model_name)
 
     def configure(parser, is_train=True):
         parser = model_class.modify_commandline_options(parser, is_train)
+        if spec.fusion == "fusion":
+            parser.add_argument("--spif_version", choices=("v1", "v2"), default="v2",
+                                help="SPIF v1: channel fusion; v2: channel-spatial fusion")
         defaults = {"output_nc": 3, **spec.defaults}
         defaults["dataset_mode"] = (
             "colorization" if spec.adapter == "colorization" else

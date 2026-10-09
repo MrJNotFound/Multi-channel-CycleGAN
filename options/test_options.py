@@ -15,7 +15,7 @@ class TestOptions(BaseOptions):
         # Dropout and Batchnorm has different behavioir during training and test.
         parser.add_argument('--eval', action='store_true', help='use eval mode during test time.')
         parser.add_argument('--num_test', type=int, default=50, help='how many test images to run')
-        parser.add_argument('--source_model', type=str, default='cycle_gan',
+        parser.add_argument('--source_model', type=str, default='cycle_gan_single_none_base',
                             help='training model family that produced the generator checkpoint')
         parser.add_argument('--save_inputs', action='store_true',
                             help='also save input/auxiliary visuals next to generated images')

@@ -6,7 +6,7 @@ import torch
 from models.base_model import BaseModel
 from models.networks import (
     SPIFCompetitiveFusion,
-    SPIFGenerator,
+    SPIFV1Generator,
     SPIFDualV2Generator,
     SPIFV2Generator,
     define_G,
@@ -86,9 +86,9 @@ def test_v2_architectures_are_registered_in_generator_factory():
     assert isinstance(reverse, SPIFDualV2Generator)
 
 
-def test_legacy_checkpoint_cannot_be_silently_loaded_as_v2():
+def test_v1_checkpoint_cannot_be_silently_loaded_as_v2():
     norm_layer = _instance_norm()
-    legacy = SPIFGenerator(
+    v1 = SPIFV1Generator(
         2, 3, ngf=8, norm_layer=norm_layer, n_blocks=1
     )
     v2 = SPIFV2Generator(
@@ -97,7 +97,7 @@ def test_legacy_checkpoint_cannot_be_silently_loaded_as_v2():
 
     with pytest.raises(RuntimeError, match="not a SPIF V2"):
         BaseModel._validate_spif_checkpoint_architecture(
-            v2, legacy.state_dict(), "legacy_net_G_A.pth"
+            v2, v1.state_dict(), "v1_net_G_A.pth"
         )
     BaseModel._validate_spif_checkpoint_architecture(
         v2, v2.state_dict(), "v2_net_G_A.pth"

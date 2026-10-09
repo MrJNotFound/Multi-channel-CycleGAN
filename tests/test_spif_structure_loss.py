@@ -3,7 +3,7 @@ import math
 import pytest
 import torch
 
-from models.spif_model import (
+from models.cycle_gan_structure_model import (
     CoarseIntensityDistributionLoss,
     FineStructureGradientLoss,
     frontloaded_cosine_decay,

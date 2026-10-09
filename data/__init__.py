@@ -51,7 +51,7 @@ def create_dataset(opt):
     """Create a dataset given the option.
 
     This function wraps the class CustomDatasetDataLoader.
-        This is the main interface between this package and 'train_dual.py'/'test_dual.py'
+        This is the main interface used by training/train.py and inference/infer.py.
 
     Example:
         >>> from data import create_dataset

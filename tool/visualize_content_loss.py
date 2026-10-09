@@ -4,7 +4,7 @@
 - 原始分辨率下、未进行逐图 RMS 归一化的加权融合梯度
 - BF/AF 通道均值的 Gaussian 低频图、8×8 归一化粗图和强度相关性
 
-对应 spif_model.py 中 FineStructureGradientLoss 和
+对应 models/cycle_gan_structure_model.py 中 FineStructureGradientLoss 和
 CoarseIntensityDistributionLoss 的计算方式。
 """
 
@@ -16,7 +16,7 @@ from tkinter import filedialog
 
 
 # ============================================================
-# 与 spif_model.py 等价的 numpy 实现
+# 与 models/cycle_gan_structure_model.py 等价的 numpy 实现
 # ============================================================
 
 SOBEL_KX = np.array(

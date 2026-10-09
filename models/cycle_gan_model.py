@@ -9,7 +9,9 @@ class CycleGANModel(BaseModel):
     """
     This class implements the CycleGAN model, for learning image-to-image translation without paired data.
 
-    The model training requires '--dataset_mode unaligned' dataset.
+    Single-source inputs use '--dataset_mode unaligned'; dual-source Stack
+    inputs use '--dataset_mode dual_channel' and '--input_nc 2'. Both modes
+    share the same generators, losses, and optimization implementation.
     By default, it uses a '--netG resnet_9blocks' ResNet generator,
     a '--netD basic' discriminator (PatchGAN introduced by pix2pix),
     and a least-square GANs objective ('--gan_mode lsgan').
@@ -57,6 +59,12 @@ class CycleGANModel(BaseModel):
             opt (Option class)-- stores all the experiment flags; needs to be a subclass of BaseOptions
         """
         BaseModel.__init__(self, opt)
+        # Resolve identity compatibility before constructing the preview list.
+        if self.isTrain and opt.lambda_identity > 0.0 and opt.input_nc != opt.output_nc:
+            print(f"WARNING: lambda_identity={opt.lambda_identity} requires input_nc==output_nc, "
+                  f"but got input_nc={opt.input_nc}, output_nc={opt.output_nc}. "
+                  "Disabling identity loss.")
+            opt.lambda_identity = 0.0
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
         self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B"]
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
@@ -91,11 +99,6 @@ class CycleGANModel(BaseModel):
             self.netD_B = networks.define_D(opt.input_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain)
 
         if self.isTrain:
-            if opt.lambda_identity > 0.0 and opt.input_nc != opt.output_nc:
-                print(f"WARNING: lambda_identity={opt.lambda_identity} requires input_nc==output_nc, "
-                      f"but got input_nc={opt.input_nc}, output_nc={opt.output_nc}. "
-                      "Disabling identity loss.")
-                opt.lambda_identity = 0.0
             self.fake_A_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             self.fake_B_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             # define loss functions

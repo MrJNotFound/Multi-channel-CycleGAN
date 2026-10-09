@@ -1,10 +1,9 @@
 """Model class template
 
 This module provides a template for users to implement custom models.
-You can specify '--model template' to use this model.
-The class name should be consistent with both the filename and its model option.
-The filename should be <model>_dataset.py
-The class name should be <Model>Dataset.py
+Copy this implementation to models/<architecture>_<variant>_model.py, then register its class
+and supported composition in models/registry.py. This example is not a runnable
+model ID; runtime loading does not depend on historical filename conventions.
 It implements a simple image-to-image translation baseline based on regression loss.
 Given input-output pairs (data_A, data_B), it learns a network netG that can minimize the following L1 loss:
     min_<netG> ||netG(data_A) - data_B||_1

@@ -1,88 +1,78 @@
-# 模型组织与命名
+# 模型与 SPIF 版本
 
-新组合 ID 统一为 `<架构>_<输入类别>_<融合策略>_<额外损失>`。它描述配置，不要求每个组合复制一份实现。
-注册、兼容和约束集中在 `registry.py`，GUI 与命令行共用；网络层定义仍在 `networks.py`，未修改。
+模型组合统一命名为 `<架构>_<输入类别>_<融合策略>_<额外损失>`，不再提供旧名称或旧导入路径别名。
+注册表描述组合，具体实现可被多个组合复用，不为不同参数复制模型文件。
+源码采用扁平目录和架构前缀，贴近原始 CycleGAN 的 `*_model.py` 风格；文件名不等同于命令行组合 ID。
+模型专用损失直接放在对应模型文件内：PatchNCE 在 `cut_model.py`，梯度、强度损失及其调度函数在 `cycle_gan_structure_model.py`，不再单设损失文件。
+
+## SPIF v1 / v2
+
+| 版本 | 融合机制 | 前向 / 反向生成器 |
+| --- | --- | --- |
+| v1 | 通道融合 | `SPIFV1Generator` / `SPIFDualV1Generator` |
+| v2 | 通道—空间竞争融合 | `SPIFV2Generator` / `SPIFDualV2Generator` |
+
+界面选择 Fusion 后直接显示“SPIF 版本”下拉框。命令行用 `--spif_version v1` 或 `--spif_version v2`，默认 v2。
+Stack 是独立的融合策略，不是 SPIF 的某个版本，也不接收版本参数。两版都保留原网络计算和 state_dict 参数键。
 
 ## 四个组成元素
 
-| 元素 | 含义与取值 |
-| --- | --- |
-| 模型架构 | `cycle_gan`（双向循环）、`cut`（单向对比）、`pix2pix`（配对监督）；具体生成器骨干由 `netG` 选择 |
-| 输入类别 | `single`：一种来源，可为灰度或 RGB；`dual`：BF 与 AF 两种来源，本仓库按两路灰度读取 |
-| 融合策略 | `none`：单类不融合；`stack`：输入通道堆叠；`fusion`：SPIF 双分支特征融合 |
-| 额外损失 | `base`：无额外损失；`structure`：SPIF 梯度与粗强度引导；`saliency`：UTOM 阈值内容损失 |
+- 架构：`cycle_gan`（双向循环）、`cut`（单向对比）、`pix2pix`（配对监督）。骨干由 `netG` 选择。
+- 输入类别：`single` 为一种来源，可为灰度或 RGB；`dual` 为 BF + AF 两种来源，各一路灰度。
+- 融合：`none` 为单类不融合；`stack` 为输入通道堆叠；`fusion` 为 SPIF 双分支融合。
+- 额外损失：`base` 为无额外损失；`structure` 为梯度与粗强度引导；`saliency` 为 UTOM 阈值内容保持。
 
-“无额外损失”不等于没有损失：CycleGAN 自带 GAN、循环一致性及可选恒等损失；CUT 自带 GAN、PatchNCE；Pix2Pix 自带条件 GAN、L1。
-`lambda_content`、`lambda_sp`、`lambda_intensity` 等仍可在结构保持组合内调节。UTOM 的权重仍按原实现指数衰减，不伪装成 SPIF 的 `lambda_content` 开关。
+基础目标始终存在：CycleGAN 自带 GAN、循环及可选恒等损失；CUT 自带 GAN、PatchNCE；Pix2Pix 自带条件 GAN、L1。
+结构保持权重仍可单独调整；UTOM 保留原有指数衰减。Lab 着色是 Pix2Pix 的任务适配，使用后缀 `_colorization`。
 
 ## 目录
 
 ```text
 models/
-├── registry.py                 # 四维组合、实现映射、参数一致性检查
-├── compat.py                   # 旧 Python 导入路径的延迟兼容
-├── base_model.py               # 公共训练/权重接口
-├── networks.py                 # 原有网络定义（不变）
-├── cycle_gan/
-│   ├── standard.py             # CycleGAN 基础实现
-│   ├── dual_stack.py           # 原双类 Stack 基线
-│   ├── structure.py            # 基础损失 + 结构保持；按参数选择融合
-│   ├── single_structure.py     # 单类结构保持的薄适配
-│   ├── dual_stack_structure.py # 双类 Stack 结构保持的薄适配
-│   ├── saliency.py             # 基础损失 + UTOM 阈值内容保持
-│   └── dual_stack_saliency.py  # 双类 Stack 内容保持
-├── cut/
-│   ├── standard.py             # CUT / FastCUT
-│   ├── dual_stack.py           # 双类 Stack 参数适配
-│   └── single_image.py         # SinCUT 单图实验扩展
-├── pix2pix/
-│   ├── standard.py             # 配对监督
-│   └── colorization.py         # Lab 着色任务适配
-├── losses/
-│   ├── structure.py            # 梯度、粗强度损失与早期衰减函数
-│   └── patchnce.py             # PatchNCE
-├── runtime/inference.py        # 仅加载生成器的推理适配
-├── examples/template.py        # 新模型开发模板
-└── legacy/fusion_alias.py      # 历史误名兼容，不作为 Fusion 展示
+├── registry.py                 # 组合、参数约束、统一生成器选择
+├── __init__.py                 # 只加载注册组合
+├── base_model.py               # 训练与严格权重加载接口
+├── networks.py                 # v1/v2 及其他网络层定义
+├── cycle_gan_model.py          # 基础 CycleGAN，单类与 Stack 共用
+├── cycle_gan_saliency_model.py # UTOM 内容保持，单类与 Stack 共用
+├── cycle_gan_structure_model.py # 单类 / Stack / Fusion 共用的结构保持实现
+├── cut_model.py                # CUT / FastCUT，单类与 Stack 共用
+├── pix2pix_model.py            # 配对监督
+├── pix2pix_colorization_model.py # Lab 着色
+├── test_model.py               # 通用生成器推理
+└── template_model.py           # 开发模板，不作为运行模型
 ```
 
-这里没有合并或重写各实现的 forward、反向传播、优化器，也没有移动网络内部层级。原有的重复初始化代码暂时保留，避免整理目录时改变训练行为。
-
-## 旧名称到新组合
-
-以下为原有推荐参数对应关系；旧配置中的实际参数优先，不能准确归类时会以兼容模块载入。
-
-| 旧名称 | 新组合 ID |
-| --- | --- |
-| `cycle_gan` | `cycle_gan_single_none_base` |
-| `cycle_gan_stack` | `cycle_gan_dual_stack_base` |
-| `spif_single` | `cycle_gan_single_none_structure` |
-| `spif_stack` | `cycle_gan_dual_stack_structure` |
-| `spif` | `cycle_gan_dual_fusion_structure` |
-| `utom` | `cycle_gan_single_none_saliency` |
-| `utom_stack` | `cycle_gan_dual_stack_saliency` |
-| `cut` | `cut_single_none_base` |
-| `cut_stack` | `cut_dual_stack_base` |
-| `pix2pix` | `pix2pix_single_none_base` |
-| `colorization` | `pix2pix_single_none_base_colorization` |
-
-此外，`cycle_gan_dual_fusion_base` 使用现有 SPIF 生成器与 `lambda_content=0`，提供纯融合架构消融；不新增网络。
-
-**特别注意 `cycle_gan_fusion`：** 当前原始实现只是 `CycleGANModel` 的空继承，实际使用标准生成器，没有特征融合。旧 ID 与导入路径仍原样保留，绝不自动换成 SPIF，以免旧权重不匹配。真正的 Fusion 请选上表的融合组合。
-
-Colorization 与普通 Pix2Pix 的差异还包括 Lab 数据及输出转换，因此作为任务适配后缀，并在 GUI 的 Pix2Pix 组合下额外显示“任务适配”。SinCUT 指单张图像训练，不是输入类别数；仓库缺少其 StyleGAN2 / singleimage 配套实现，保留代码但不在 GUI 宣称可用。
-
-## 使用与兼容
+## 使用
 
 ```bash
-python training/train.py --dataroot datasets/sample --name example --model cycle_gan_dual_fusion_structure --dataset_mode dual_channel
-python inference/infer.py --dataroot datasets/sample --name example --model test --source_model cycle_gan_dual_fusion_structure --dataset_mode dual_channel --model_suffix _A
+python training/train.py --dataroot datasets/sample --name spif_v1 --model cycle_gan_dual_fusion_structure --spif_version v1
+python training/train.py --dataroot datasets/sample --name spif_v2 --model cycle_gan_dual_fusion_structure --spif_version v2
+python inference/infer.py --dataroot datasets/sample --name spif_v1 --model test --source_model cycle_gan_dual_fusion_structure --dataset_mode dual_channel --spif_version v1 --model_suffix _A
 ```
 
-旧命令 `--model spif`、旧代码 `from models.spif_model import SPIFModel` 和旧 schema 2 配置继续支持。新代码请使用组织后的导入路径。类名、`G_A/G_B/G/D` 权重键、文件后缀不因这次整理改变；恢复实验仍须使用原始 `netG`、`spif_arch`、通道数等参数。
+单类结构保持使用 `cycle_gan_single_none_structure`；Stack 结构保持使用 `cycle_gan_dual_stack_structure`。
+Stack 仅改变输入组织与通道配置，不单独实现模型：基础目标共用 `cycle_gan_model.py`，
+阈值内容保持共用 `cycle_gan_saliency_model.py`，结构保持共用 `cycle_gan_structure_model.py`，CUT 共用 `cut_model.py`。
+界面选择“双类 → Stack”时联动双目录数据加载与 `input_nc=2`；单类可以选择灰度或 RGB。
+输入、输出通道不一致时，CycleGAN 自动禁用 identity loss；双类预览分别展示 BF、AF。
+组合 ID、GUI schema 4 和权重参数键保持不变，已有 Stack 配置无需重新保存。
+融合消融使用 `cycle_gan_dual_fusion_base`，它仅将内容损失关闭，不另建网络。
+仅支持已实现组合：Fusion 使用 ResNet 6/9 blocks；没有 CUT + Fusion 或 UTOM + Fusion。
 
-Fusion 只支持原代码已有的 ResNet 6/9 blocks + `spif_arch=v2/legacy`。CUT + Fusion、UTOM + Fusion 等未注册组合不会出现在 GUI 中。不以名称暗中切换网络，冲突参数会在启动前报错。
+## 清理边界与已有权重
 
-扩展时把实现放在对应架构目录，在 `IMPLEMENTATIONS` 登记路径与类，再增加 `ModelSpec` 组合。公共损失可放到 `losses/`。旧式 `models/<name>_model.py` 自定义插件仍可自动发现，并显示在“兼容 / 自定义插件”区域。
+已删除旧导入兼容器、旧模型别名、旧 GUI 配置迁移、误名的融合空壳、纯参数包装、
+缺少配套实现的 SinCUT，以及重复的单/双路与微调入口。现在仅有 `training/train.py` 和 `inference/infer.py`；
+续训、微调仍由统一训练入口的 `--continue_train`、`--pretrained_name` 等参数控制。
 
-所有已注册模型、兼容适配与独立损失均纳入 Git 保留范围，避免新克隆仓库缺少界面选项或测试依赖。实验启动预设、数据及权重等仍排除，详见 [`docs/REPOSITORY_SCOPE.md`](../docs/REPOSITORY_SCOPE.md)。
+旧命令与旧 JSON 请按照当前接口重新配置，不再静默迁移。GUI 仅保存/加载 schema 4。
+`spif_arch` 和损失参数的旧拼写已移除；使用 `spif_version`、`lambda_intensity`、`sp_grad_decay_fraction`。
+
+已有权重文件无需改名，也没有被修改；选择对应 v1/v2、原骨干、通道数和网络宽度即可加载。
+检查点参数键必须严格匹配，不再删除未知键或忽略缺失参数。版本/结构不匹配会明确报错，不会假装加载成功。
+这不承诺加载历史开发中已废弃的第三种结构或非常早期 PyTorch 格式。
+
+扩展时在 `models/<架构>_<变体>_model.py` 实现模型，并在 `IMPLEMENTATIONS` / `MODEL_SPECS` 显式注册；不自动扫描文件名。
+原架构子目录已移除，Python 导入使用新的扁平路径；训练/推理组合 ID、GUI 配置格式和 state_dict 权重格式不变。
+Git 保留范围见 [仓库范围说明](../docs/REPOSITORY_SCOPE.md)。被 Git 排除的本地实验脚本与论文记录不属于新版运行接口，未自动改写。

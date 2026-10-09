@@ -41,7 +41,7 @@ class RecordingModel(BaseModel):
 
 
 def make_options(root, preprocess):
-    parser, _ = build_option_parser('train', 'cycle_gan', 'unaligned')
+    parser, _ = build_option_parser('train', 'cycle_gan_single_none_base', 'unaligned')
     opt = parser.parse_args([
         '--dataroot', str(root), '--name', 'worker_test',
         '--checkpoints_dir', str(root / 'checkpoints'),
