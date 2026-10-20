@@ -1,154 +1,49 @@
-# Repository scope: runnable methods, training/inference, GUI, tests and docs.
-# New top-level content is local-only until explicitly admitted here.
+# Public release allowlist: SPIF core, two entry points, and reproducibility tests.
 /*
 !/.gitignore
 !/LICENSE
 !/README.md
-!/launch_gui.py
-!/models/
-!/data/
-!/options/
-!/util/
-!/gui/
+!/requirements.txt
+!/train.py
+!/test.py
+!/spif/
 !/tests/
-!/training/
-!/inference/
-!/tool/
-!/docs/
+!/datasets/
+!/checkpoints/
+!/results/
 
-# Keep future dependency/build/CI definitions visible to Git.
-!/requirements*.txt
-!/pyproject.toml
-!/setup.py
-!/setup.cfg
-!/environment*.yml
-!/environment*.yaml
-!/pytest.ini
-!/tox.ini
-!/uv.lock
-!/poetry.lock
-!/Makefile
-!/Dockerfile
-!/.dockerignore
-!/.github/
+# Publish only the empty input/output folder skeleton, never local images or weights.
+/datasets/**
+!/datasets/trainA_BF/
+!/datasets/trainA_AF/
+!/datasets/trainB/
+!/datasets/testA_BF/
+!/datasets/testA_AF/
+!/datasets/trainA_BF/.gitkeep
+!/datasets/trainA_AF/.gitkeep
+!/datasets/trainB/.gitkeep
+!/datasets/testA_BF/.gitkeep
+!/datasets/testA_AF/.gitkeep
+/checkpoints/*
+!/checkpoints/.gitkeep
+/results/*
+!/results/.gitkeep
 
-# Keep every registered implementation in models/.
-# CUT/UTOM/Pix2Pix are used by the catalogue and composition tests; ignoring
-# them would silently remove GUI choices in a fresh clone.
-
-# Only the two unified engines; no duplicate or per-experiment launchers.
-/training/*
-!/training/__init__.py
-!/training/train.py
-/inference/*
-!/inference/__init__.py
-!/inference/infer.py
-
-# Curated preprocessing/postprocessing needed for virtual staining.
-# img_registrating_pair imports img_registrating_series: keep BOTH.
-/tool/*
-!/tool/__init__.py
-!/tool/build_dual_channel_dataset.py
-!/tool/patch_generate_multi_mode.py
-!/tool/patch_stitching.py
-!/tool/img_invert.py
-!/tool/img_registrating_pair.py
-!/tool/img_registrating_series.py
-!/tool/color_normalization.py
-!/tool/auto_freq_filter.py
-!/tool/ROI_crop.py
-!/tool/threshold_seg.py
-!/tool/metrics_evaluating.py
-!/tool/loss_plot.py
-!/tool/visualize_content_loss.py
-
-# Public usage/architecture docs only; manuscript/submission notes stay local.
-# Do not blanket-ignore PNG/SVG/JSON: documentation assets and configs matter.
-/docs/*
-!/docs/GUI_CN.md
-!/docs/REPOSITORY_SCOPE.md
-!/docs/spif_v2/
-/docs/spif_v2/*
-!/docs/spif_v2/architecture.md
-!/docs/spif_v2/spif_v2_generator.svg
-!/docs/spif_v2/spif_v2_generator.png
-!/docs/spif_v2/sccf_principle_diagram.png
-
-# Explicit local-only areas (also excluded by the top-level allowlist).
-/paper/
-/datasets/
-/checkpoints/
-/results/
-/out/
-/output/
-/tmp/
-/temp/
-/logs/
-/runs/
-/wandb/
-/scripts/
-/run_ablation.py
-/run_spif_ablations.py
-/train_spif_*.py
-/finetune.py
-/对比实验设计.md
-
-# Environments, packaging and Python/tool caches (including nested folders).
+# Local caches, checkpoints, environment files, and editor state.
 __pycache__/
 *.py[cod]
-*$py.class
+.pytest_cache/
 .venv/
 venv/
-env/
-ENV/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.hypothesis/
-.tox/
-.nox/
-.ipynb_checkpoints/
-.cache/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-build/
-dist/
-*.egg-info/
-*.egg
-
-# IDE, agent-specific local state and operating-system noise.
-.idea/
-.vscode/
-.vs/
-.claude/
-.codex/
-.agents/
-CLAUDE.md
-AGENTS.md
-.DS_Store
-Thumbs.db
-Desktop.ini
-*.swp
-*.swo
-*~
-*.bak
-*.tmp
-
-# Weights and training telemetry, wherever an experiment writes them.
-*.pth
 *.pt
+*.pth
 *.ckpt
-*.safetensors
-*.onnx
-*.tfevents.*
 *.log
-
-# Secrets; sanitized examples remain trackable.
+*.tmp
 .env
 .env.*
-*.pem
-*.key
-!.env.example
-!.env.template
+.DS_Store
+Thumbs.db
+
+# Local source backups and manuscript assets are excluded by the root allowlist.
+/.local_backup/
