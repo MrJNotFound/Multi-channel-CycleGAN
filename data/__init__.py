@@ -16,6 +16,8 @@ import torch.utils.data
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 import os
+import random
+import numpy as np
 from data.base_dataset import BaseDataset
 
 
@@ -62,6 +64,36 @@ def create_dataset(opt):
     return dataset
 
 
+class EpochSeededDataset(torch.utils.data.Dataset):
+    """Keep data sampling/augmentation independent of model initialization.
+
+    A sample's random stream depends only on seed, epoch and source index.
+    Restoring states also isolates data randomness when num_workers is zero.
+    """
+
+    def __init__(self, dataset, seed):
+        self.dataset = dataset
+        self.seed = int(seed)
+        self.epoch = 1
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        seed = (self.seed + self.epoch * 1000003 + int(index)) % (2 ** 32)
+        py_state, np_state = random.getstate(), np.random.get_state()
+        torch_state = torch.get_rng_state()
+        try:
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.random.default_generator.manual_seed(seed)
+            return self.dataset[index]
+        finally:
+            random.setstate(py_state)
+            np.random.set_state(np_state)
+            torch.set_rng_state(torch_state)
+
+
 class CustomDatasetDataLoader:
     """Wrapper class of Dataset class that performs multi-threaded data loading"""
 
@@ -75,17 +107,23 @@ class CustomDatasetDataLoader:
         dataset_class = find_dataset_using_name(opt.dataset_mode)
         self.dataset = dataset_class(opt)
         print("dataset [%s] was created" % type(self.dataset).__name__)
+        self.seed = getattr(opt, 'seed', None)
+        self.generator = None
+        if self.seed is not None:
+            self.dataset = EpochSeededDataset(self.dataset, self.seed)
+            self.generator = torch.Generator().manual_seed(self.seed + 1)
 
         # Use DistributedSampler for DDP training
         if "LOCAL_RANK" in os.environ:
             print(f'create DDP sampler on rank {int(os.environ["LOCAL_RANK"])}')
-            self.sampler = DistributedSampler(self.dataset, shuffle=not opt.serial_batches)
+            self.sampler = DistributedSampler(self.dataset, shuffle=not opt.serial_batches,
+                                              seed=self.seed if self.seed is not None else 0)
             shuffle = False  # DistributedSampler handles shuffling
         else:
             self.sampler = None
             shuffle = not opt.serial_batches
 
-        self.dataloader = torch.utils.data.DataLoader(self.dataset, batch_size=opt.batch_size, shuffle=shuffle, sampler=self.sampler, num_workers=int(opt.num_threads))
+        self.dataloader = torch.utils.data.DataLoader(self.dataset, batch_size=opt.batch_size, shuffle=shuffle, sampler=self.sampler, num_workers=int(opt.num_threads), generator=self.generator)
 
     def load_data(self):
         return self
@@ -103,5 +141,8 @@ class CustomDatasetDataLoader:
 
     def set_epoch(self, epoch):
         """Set epoch for DistributedSampler to ensure proper shuffling"""
+        if self.generator is not None:
+            self.generator.manual_seed(self.seed + epoch)
+            self.dataset.epoch = int(epoch)
         if self.sampler is not None:
             self.sampler.set_epoch(epoch)

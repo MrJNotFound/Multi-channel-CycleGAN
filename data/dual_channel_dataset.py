@@ -24,11 +24,18 @@ class DualChannelDataset(BaseDataset):
         dataroot/testA_AF/    -- test AF images
     """
 
+    @staticmethod
+    def modify_commandline_options(parser, is_train):
+        parser.add_argument('--bf_dir', default=None, help='optional aligned BF image directory')
+        parser.add_argument('--af_dir', default=None, help='optional aligned AF image directory')
+        parser.add_argument('--target_dir', default=None, help='optional unpaired domain B image directory')
+        return parser
+
     def __init__(self, opt):
         BaseDataset.__init__(self, opt)
 
-        self.dir_A_bf = os.path.join(opt.dataroot, opt.phase + "A_BF")
-        self.dir_A_af = os.path.join(opt.dataroot, opt.phase + "A_AF")
+        self.dir_A_bf = getattr(opt, 'bf_dir', None) or os.path.join(opt.dataroot, opt.phase + "A_BF")
+        self.dir_A_af = getattr(opt, 'af_dir', None) or os.path.join(opt.dataroot, opt.phase + "A_AF")
 
         bf_paths = sorted(make_dataset(self.dir_A_bf, opt.max_dataset_size))
         af_paths = sorted(make_dataset(self.dir_A_af, opt.max_dataset_size))
@@ -52,7 +59,7 @@ class DualChannelDataset(BaseDataset):
         self.A_size = len(self.A_pairs)
 
         # Domain B: H&E images (optional — may not exist during test/inference)
-        self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")
+        self.dir_B = getattr(opt, 'target_dir', None) or os.path.join(opt.dataroot, opt.phase + "B")
         if os.path.isdir(self.dir_B):
             self.B_paths = sorted(make_dataset(self.dir_B, opt.max_dataset_size))
             self.has_B = True

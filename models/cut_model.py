@@ -81,7 +81,8 @@ class CUTModel(BaseModel):
         # define networks
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG,
                                        normG, not opt.no_dropout, opt.init_type, opt.init_gain,
-                                       opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
+                                       gpu_ids=self.gpu_ids, no_antialias=opt.no_antialias,
+                                       no_antialias_up=opt.no_antialias_up, opt=opt)
         self.netF = networks.define_F(opt.input_nc, opt.netF, normG, not opt.no_dropout,
                                        opt.init_type, opt.init_gain, opt.no_antialias,
                                        self.gpu_ids, opt)

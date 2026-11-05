@@ -29,11 +29,11 @@ class GitignoreTests(unittest.TestCase):
             paths.extend(path.relative_to(ROOT).as_posix()
                          for path in (ROOT / directory).rglob("*.py")
                          if "__pycache__" not in path.parts)
-        paths.extend(["models/README.md", "training/train.py", "inference/infer.py"])
+        paths.extend(["models/README.md", "training/train.py", "training/experiment_queue.py", "inference/infer.py"])
         self.assertEqual(ignored_paths(paths), set())
 
     def test_curated_docs_and_tools_are_trackable(self):
-        paths = ["docs/GUI_CN.md", "docs/REPOSITORY_SCOPE.md",
+        paths = ["docs/GUI_CN.md", "docs/EXPERIMENT_QUEUE_CN.md", "docs/REPOSITORY_SCOPE.md",
                  "docs/spif_v2/architecture.md", "docs/spif_v2/spif_v2_generator.svg",
                  "docs/spif_v2/spif_v2_generator.png", "docs/spif_v2/sccf_principle_diagram.png"]
         tools = ["build_dual_channel_dataset", "patch_generate_multi_mode", "patch_stitching",

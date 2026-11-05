@@ -9,12 +9,14 @@ branch instead of a dedicated script.
 from __future__ import annotations
 
 import json
+import random
 import re
 import sys
 import time
 from pathlib import Path
 
 import torch
+import numpy as np
 import torch.distributed as dist
 
 
@@ -197,6 +199,13 @@ def _set_discriminator_updates(model, enabled: bool) -> None:
 
 
 def run_training(opt, user_args: list[str]) -> None:
+    seed = getattr(opt, 'seed', None)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed % (2 ** 32))
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
     dataset = create_dataset(opt)
     dataset_size = len(dataset)
     if dataset_size <= 0:
@@ -370,7 +379,7 @@ def run_training(opt, user_args: list[str]) -> None:
             )
 
         model.update_learning_rate()
-        if epoch % opt.save_epoch_freq == 0:
+        if epoch == final_epoch or (opt.save_epoch_freq > 0 and epoch % opt.save_epoch_freq == 0):
             print(f"saving model at end of epoch {epoch}, iters {total_iters}")
             model.save_networks("latest")
             _save_state(model, "latest", epoch + 1, total_iters)

@@ -94,6 +94,9 @@ python launch_gui.py
 
 ### 训练
 
+多项对比与消融实验可以通过 `training/experiment_queue.py` 选择并顺序执行，
+完整 SPIF 排在最后，已完成任务自动跳过。用法见 [顺序实验训练](docs/EXPERIMENT_QUEUE_CN.md)。
+
 ```bash
 # SPIF 模型（推荐用于双通道虚拟染色）
 python training/train.py \

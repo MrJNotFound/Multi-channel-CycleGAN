@@ -16,6 +16,12 @@ class UnalignedDataset(BaseDataset):
     '/path/to/data/testA' and '/path/to/data/testB' during test time.
     """
 
+    @staticmethod
+    def modify_commandline_options(parser, is_train):
+        parser.add_argument('--source_dir', default=None, help='optional explicit domain A image directory')
+        parser.add_argument('--target_dir', default=None, help='optional explicit domain B image directory')
+        return parser
+
     def __init__(self, opt):
         """Initialize this dataset class.
 
@@ -23,8 +29,8 @@ class UnalignedDataset(BaseDataset):
             opt (Option class) -- stores all the experiment flags; needs to be a subclass of BaseOptions
         """
         BaseDataset.__init__(self, opt)
-        self.dir_A = os.path.join(opt.dataroot, opt.phase + "A")  # create a path '/path/to/data/trainA'
-        self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")  # create a path '/path/to/data/trainB'
+        self.dir_A = getattr(opt, 'source_dir', None) or os.path.join(opt.dataroot, opt.phase + "A")
+        self.dir_B = getattr(opt, 'target_dir', None) or os.path.join(opt.dataroot, opt.phase + "B")
 
         self.A_paths = sorted(make_dataset(self.dir_A, opt.max_dataset_size))  # load images from '/path/to/data/trainA'
         self.B_paths = sorted(make_dataset(self.dir_B, opt.max_dataset_size))  # load images from '/path/to/data/trainB'
