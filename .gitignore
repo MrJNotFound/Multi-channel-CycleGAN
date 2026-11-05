@@ -45,24 +45,6 @@
 !/inference/__init__.py
 !/inference/infer.py
 
-# Curated preprocessing/postprocessing needed for virtual staining.
-# img_registrating_pair imports img_registrating_series: keep BOTH.
-/tool/*
-!/tool/__init__.py
-!/tool/build_dual_channel_dataset.py
-!/tool/patch_generate_multi_mode.py
-!/tool/patch_stitching.py
-!/tool/img_invert.py
-!/tool/img_registrating_pair.py
-!/tool/img_registrating_series.py
-!/tool/color_normalization.py
-!/tool/auto_freq_filter.py
-!/tool/ROI_crop.py
-!/tool/threshold_seg.py
-!/tool/metrics_evaluating.py
-!/tool/loss_plot.py
-!/tool/visualize_content_loss.py
-
 # Public usage/architecture docs only; manuscript/submission notes stay local.
 # Do not blanket-ignore PNG/SVG/JSON: documentation assets and configs matter.
 /docs/*
