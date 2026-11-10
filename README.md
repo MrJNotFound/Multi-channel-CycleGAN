@@ -140,6 +140,19 @@ python inference/infer.py \
     --epoch latest
 ```
 
+已训练的实验可用 [inference/stitch_queue.py](inference/stitch_queue.py) 顺序推理，
+再调用 tool/patch_stitching.py 按坐标拼接。大图校验通过后自动清理该实验的临时生成图块。
+例如（Windows，仓库根目录执行）：
+
+    .\.venv\Scripts\python.exe inference\stitch_queue.py --config runs\lung_12_once\queue_config.json --input "C:\Users\30927\Desktop\img_histology\stain_lung\inference" --output results\lung_12_once_epoch200 --epoch 200 --run
+
+不带 --run 时只检查并列出计划；中断后原命令增加 --resume。
+已完成且校验通过的实验会跳过；--select C01 C10 可选择子集（使用单独的输出目录）。
+输入须包含同名配对的 testA_BF/ 和 testA_AF/，图块名含 patch_y..._x...。
+程序使用原始尺寸、无翻转、eval 模式和 Hann 重叠融合，大图边界按图块坐标范围推断。
+stitched/ 保存最终 PNG，inference_state.json 记录进度，inference_plan.json 保存参数与数据/权重摘要。
+拼接失败时保留临时图块用于恢复，成功后仅清理本次输出目录的 .patches/<实验ID>/。
+
 ## 关键参数
 
 | 参数 | 默认值 | 说明 |

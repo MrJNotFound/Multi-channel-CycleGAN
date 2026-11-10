@@ -23,6 +23,8 @@ class TestOptions(BaseOptions):
                             help='create an HTML report for all saved inference visuals')
         parser.add_argument('--output_suffix', type=str, default='_fake',
                             help='suffix appended to generated output filenames')
+        parser.add_argument('--png_compress_level', type=int, choices=range(10), default=6,
+                            help='lossless PNG compression level; lower is faster')
         # rewrite devalue values
         parser.set_defaults(model='test')
         # To avoid cropping, the load_size should be the same as crop_size

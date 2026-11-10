@@ -78,6 +78,8 @@ def run_inference(opt) -> None:
             break
         model.set_input(data)
         model.test()
+        if not model.fake.isfinite().all().item():
+            raise RuntimeError(f'Non-finite generated pixels: {model.get_image_paths()}')
         image_paths = model.get_image_paths()
         if isinstance(image_paths, (str, Path)):
             image_paths = [image_paths]
@@ -96,6 +98,7 @@ def run_inference(opt) -> None:
                 generated,
                 image_dir / f"{stem}{opt.output_suffix}.png",
                 aspect_ratio=opt.aspect_ratio,
+                png_compress_level=getattr(opt, 'png_compress_level', 6),
             )
 
             if visuals is not None and opt.save_inputs:

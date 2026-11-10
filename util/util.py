@@ -89,7 +89,7 @@ def cleanup_ddp():
         dist.destroy_process_group()
 
 
-def save_image(image_numpy, image_path, aspect_ratio=1.0):
+def save_image(image_numpy, image_path, aspect_ratio=1.0, png_compress_level=None):
     """Save a numpy image to the disk
 
     Parameters:
@@ -104,7 +104,8 @@ def save_image(image_numpy, image_path, aspect_ratio=1.0):
         image_pil = image_pil.resize((h, int(w * aspect_ratio)), Image.BICUBIC)
     if aspect_ratio < 1.0:
         image_pil = image_pil.resize((int(h / aspect_ratio), w), Image.BICUBIC)
-    image_pil.save(image_path)
+    save_options = {} if png_compress_level is None else {'compress_level': png_compress_level}
+    image_pil.save(image_path, **save_options)
 
 
 def print_numpy(x, val=True, shp=False):

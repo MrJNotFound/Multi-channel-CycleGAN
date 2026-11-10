@@ -225,6 +225,7 @@ def elastic_registration_transform(
         outTx: SimpleITK BSplineTransform
         fixed_sitk: 固定图像的 SimpleITK 对象（用于后续 resample）
         orig_shape: 原始固定图像尺寸 (h, w)，供 apply 时上采样回原尺寸
+                    apply 的 output_size 使用 (w, h)，传入前须转换顺序。
     """
     if shrink_factors is None:
         shrink_factors = [5]

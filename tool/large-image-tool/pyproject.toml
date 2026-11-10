@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "large-image-tool"
+version = "0.6.0"
+description = "Cross-platform microscopy stitch planning, tool-mark removal, mosaic synthesis, and splitting tool"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "Pillow>=10.0",
+  "PySide6>=6.5",
+  "tifffile>=2026.5",
+  "imagecodecs>=2026.5",
+  "zarr>=3.2",
+]
+
+[project.scripts]
+large-image-tool = "large_image_tool.main:main"
+large-image-tool-cli = "large_image_tool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

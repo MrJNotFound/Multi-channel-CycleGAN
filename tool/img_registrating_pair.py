@@ -1,14 +1,17 @@
 """
 批量配对配准工具
 ---------------
-选取一组参考图像，再选多组待配准图像（每组数量与参考一致）。
-图像按文件名排序后一一配对，每组独立输出到子文件夹。
+选取一组参考图像，再通过父文件夹批量添加多组，或逐组选择图像。
+父文件夹模式仅扫描一级子文件夹内的图像，每组数量须与参考一致；
+数量不匹配的文件夹会提示并跳过，输出子文件夹保留输入组名。
+图像按文件名排序后一一配对，输出尺寸始终与对应参考图一致。
 
 依赖: img_registrating_series.py（同目录下的刚性/弹性配准函数）
 """
 
 import os
 import sys
+from pathlib import Path
 import cv2
 import numpy as np
 import SimpleITK as sitk
@@ -63,6 +66,119 @@ def _continue_dialog(root, group_idx):
         f"已添加第 {group_idx} 组。\n是否继续添加下一组待配准图像？",
         parent=root,
     )
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp"}
+
+
+def _discover_groups_from_parent(parent_dir, expected_count, output_root=None):
+    """返回 [(子目录名, 排序后的图像路径)] 和跳过原因；不递归扫描。"""
+    parent_dir = Path(parent_dir).resolve()
+    if not parent_dir.is_dir():
+        raise ValueError(f"父文件夹不存在: {parent_dir}")
+    if expected_count <= 0:
+        raise ValueError("参考图像数量必须大于 0")
+    output_dir = Path(output_root).resolve() if output_root else None
+    if output_dir == parent_dir:
+        raise ValueError("输出根目录不能与输入父文件夹相同，以免覆盖原始图像。")
+    groups, skipped = [], []
+    for directory in sorted(parent_dir.iterdir(), key=lambda p: p.name):
+        if not directory.is_dir():
+            continue
+        if output_dir is not None and directory.resolve() == output_dir:
+            skipped.append(f"{directory.name}: 输出文件夹，已跳过")
+            continue
+        paths = _sorted_paths(
+            str(p) for p in directory.iterdir()
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+        )
+        if len(paths) != expected_count:
+            skipped.append(f"{directory.name}: 找到 {len(paths)} 张图像，需要 {expected_count} 张")
+            continue
+        groups.append((directory.name, paths))
+    return groups, skipped
+
+
+def _select_group_source(root):
+    """选择父文件夹批量添加，或保留原有的逐组文件选择方式。"""
+    selected = [None]
+    window = tk.Toplevel(root)
+    window.title("添加待配准图像")
+    window.resizable(False, False)
+    tk.Label(window, text="选择多组待配准图像的添加方式：",
+             font=("", 11)).pack(padx=24, pady=(18, 8))
+
+    def choose(value):
+        selected[0] = value
+        window.destroy()
+
+    tk.Button(window, text="选择父文件夹（自动识别一级子文件夹）",
+              command=lambda: choose("parent"), width=42).pack(padx=20, pady=6)
+    tk.Button(window, text="逐组选择图像文件",
+              command=lambda: choose("files"), width=42).pack(padx=20, pady=6)
+    tk.Button(window, text="取消", command=window.destroy, width=12).pack(pady=(8, 16))
+    window.bind("<Escape>", lambda event: window.destroy())
+    window.grab_set()
+    root.wait_window(window)
+    return selected[0]
+
+
+def _pick_moving_groups(root, expected_count, output_root):
+    source = _select_group_source(root)
+    if source == "parent":
+        while True:
+            parent_dir = filedialog.askdirectory(
+                title="选择待配准图像父文件夹（每个一级子文件夹为一组）", parent=root)
+            if not parent_dir:
+                return []
+            try:
+                groups, skipped = _discover_groups_from_parent(
+                    parent_dir, expected_count, output_root)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("无法添加文件夹", str(exc), parent=root)
+                continue
+            print(f"待配准父文件夹: {parent_dir}")
+            for reason in skipped:
+                print(f"  跳过: {reason}")
+            if not groups:
+                messagebox.showwarning(
+                    "未找到有效分组",
+                    f"一级子文件夹中没有恰好包含 {expected_count} 张图像的分组。"
+                    "\n仅扫描子文件夹内直接存放的图像，不扫描更深层目录。"
+                    "\n请重新选择父文件夹。", parent=root)
+                continue
+            if skipped:
+                details = "\n".join(skipped[:12])
+                if len(skipped) > 12:
+                    details += f"\n……另有 {len(skipped) - 12} 项，详情见控制台。"
+                messagebox.showinfo(
+                    "分组识别结果",
+                    f"已添加 {len(groups)} 组，每组 {expected_count} 张。"
+                    f"\n以下 {len(skipped)} 个文件夹未加入：\n{details}", parent=root)
+            return groups
+    if source == "files":
+        groups = []
+        while True:
+            group_idx = len(groups) + 1
+            paths = _pick_images(
+                root, title=f"选择第 {group_idx} 组待配准图像（需选 {expected_count} 张）",
+                expect_n=expected_count)
+            if paths is None:
+                break
+            groups.append((f"group_{group_idx:02d}", paths))
+            if not _continue_dialog(root, group_idx):
+                break
+        return groups
+    return []
+
+
+def _apply_elastic_on_reference(moving_img, fixed_sitk, transform, reference_img):
+    """输出到当前参考图的 (宽, 高)，兼容旧参数中的 (高, 宽) 或缺失 shape。"""
+    # transform 返回的 orig_shape / 旧 shape.npz 是 NumPy 的 (h, w)；
+    # elastic_registration_apply 和 cv2.resize 的 output_size 则是 (w, h)。
+    height, width = reference_img.shape[:2]
+    return elastic_registration_apply(
+        moving_img, fixed_sitk, transform, output_size=(width, height))
 
 
 def _save_params(params_root, mode, cached_rigid, cached_elastic):
@@ -152,32 +268,15 @@ if __name__ == "__main__":
     print(f"输出根目录: {output_root}")
 
     # ===== Step 3: 选择多组待配准图像 =====
-    groups: list[list[str]] = []
-    group_idx = 1
-    while True:
-        mov_paths = _pick_images(
-            root,
-            title=f"选择第 {group_idx} 组待配准图像（需选 {N} 张）—— 取消则结束选择",
-            expect_n=N,
-        )
-        if mov_paths is None:
-            if group_idx == 1:
-                print("未选择任何待配准图像，退出。")
-                root.destroy()
-                exit()
-            else:
-                print("已结束组添加。")
-                break
-
-        groups.append(mov_paths)
-        print(f"\n第 {group_idx} 组: {len(mov_paths)} 张")
+    groups = _pick_moving_groups(root, N, output_root)
+    if not groups:
+        print("未选择任何待配准图像，退出。")
+        root.destroy()
+        exit()
+    for group_idx, (group_name, mov_paths) in enumerate(groups, 1):
+        print(f"\n第 {group_idx} 组 [{group_name}]: {len(mov_paths)} 张")
         for j, p in enumerate(mov_paths):
             print(f"  [{j + 1}] {os.path.basename(p)}  ↔  {os.path.basename(ref_paths[j])}")
-
-        if not _continue_dialog(root, group_idx):
-            break
-        group_idx += 1
-
     print(f"\n共 {len(groups)} 组待配准，每组 {N} 对。")
 
     # ===== Step 4: 参数设置 =====
@@ -226,13 +325,13 @@ if __name__ == "__main__":
     r += 1
 
     reuse_rigid_var = tk.BooleanVar(value=False)
-    tk.Checkbutton(param_win, text="复用刚性参数（仅首对计算仿射矩阵，其余复用）",
+    tk.Checkbutton(param_win, text="复用刚性参数（首组逐对计算，后续组按对应位置复用）",
                    variable=reuse_rigid_var, font=("", 10)).grid(
         row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
     r += 1
 
     reuse_elastic_var = tk.BooleanVar(value=False)
-    tk.Checkbutton(param_win, text="复用弹性参数（仅首对计算形变场，其余复用）",
+    tk.Checkbutton(param_win, text="复用弹性参数（首组逐对计算，后续组按对应位置复用）",
                    variable=reuse_elastic_var, font=("", 10)).grid(
         row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
     r += 1
@@ -390,11 +489,11 @@ if __name__ == "__main__":
                            variable=only_rigid_var, font=("", 10)).grid(
                 row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
             r += 1
-            tk.Checkbutton(param_win, text="复用刚性参数（仅首对计算仿射矩阵，其余复用）",
+            tk.Checkbutton(param_win, text="复用刚性参数（首组逐对计算，后续组按对应位置复用）",
                            variable=reuse_rigid_var, font=("", 10)).grid(
                 row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
             r += 1
-            tk.Checkbutton(param_win, text="复用弹性参数（仅首对计算形变场，其余复用）",
+            tk.Checkbutton(param_win, text="复用弹性参数（首组逐对计算，后续组按对应位置复用）",
                            variable=reuse_elastic_var, font=("", 10)).grid(
                 row=r, column=0, columnspan=3, sticky="w", padx=15, pady=3)
             r += 1
@@ -479,9 +578,9 @@ if __name__ == "__main__":
     # ===== Step 5: 逐组逐对配准 =====
     ref_imgs_cache: dict[str, np.ndarray] = {}
 
-    # 缓存：仅首对计算参数，后续复用
+    # 缓存：首组逐对计算参数，后续组按 p_idx 复用
     #   rigid:  {p_idx: (mat_full, fixed_shape)}
-    #   elastic: {p_idx: (outTx, fixed_sitk)}
+    #   elastic: {p_idx: (outTx, fixed_sitk, orig_shape_hw)}
     cached_rigid: dict[int, tuple] = {}
     cached_elastic: dict[int, tuple] = {}
 
@@ -498,11 +597,11 @@ if __name__ == "__main__":
     use_rigid_cache = load_params or reuse_rigid or save_params
     use_elastic_cache = load_params or reuse_elastic or save_params
 
-    for g_idx, mov_paths in enumerate(groups, 1):
-        group_dir = os.path.join(output_root, f"group_{g_idx:02d}")
+    for g_idx, (group_name, mov_paths) in enumerate(groups, 1):
+        group_dir = os.path.join(output_root, group_name)
         os.makedirs(group_dir, exist_ok=True)
         print(f"\n{'=' * 50}")
-        print(f"第 {g_idx}/{len(groups)} 组 → {group_dir}")
+        print(f"第 {g_idx}/{len(groups)} 组 [{group_name}] → {group_dir}")
         if use_rigid_cache or use_elastic_cache:
             flags = []
             if use_rigid_cache:
@@ -570,8 +669,8 @@ if __name__ == "__main__":
                 elif mode == "弹性":
                     if use_elastic_cache and p_idx in cached_elastic:
                         outTx, fixed_sitk, orig_shape = cached_elastic[p_idx]
-                        result = elastic_registration_apply(mov_img, fixed_sitk, outTx,
-                                                            output_size=orig_shape)
+                        result = _apply_elastic_on_reference(
+                            mov_img, fixed_sitk, outTx, ref_img)
                         print(f"♻", end="")
                     elif use_elastic_cache:
                         outTx, fixed_sitk, orig_shape = elastic_registration_transform(
@@ -585,8 +684,8 @@ if __name__ == "__main__":
                             scale_factor=elastic_sf,
                         )
                         cached_elastic[p_idx] = (outTx, fixed_sitk, orig_shape)
-                        result = elastic_registration_apply(mov_img, fixed_sitk, outTx,
-                                                            output_size=orig_shape)
+                        result = _apply_elastic_on_reference(
+                            mov_img, fixed_sitk, outTx, ref_img)
                     else:
                         result = elastic_registration(
                             ref_img, mov_img,
@@ -632,8 +731,8 @@ if __name__ == "__main__":
                     # -- 弹性阶段 --
                     if use_elastic_cache and p_idx in cached_elastic:
                         outTx, fixed_sitk, orig_shape = cached_elastic[p_idx]
-                        result = elastic_registration_apply(rigid_result, fixed_sitk, outTx,
-                                                            output_size=orig_shape)
+                        result = _apply_elastic_on_reference(
+                            rigid_result, fixed_sitk, outTx, ref_img)
                         if use_rigid_cache:
                             print(f"+♻", end="")
                         else:
@@ -650,8 +749,8 @@ if __name__ == "__main__":
                             scale_factor=elastic_sf,
                         )
                         cached_elastic[p_idx] = (outTx, fixed_sitk, orig_shape)
-                        result = elastic_registration_apply(rigid_result, fixed_sitk, outTx,
-                                                            output_size=orig_shape)
+                        result = _apply_elastic_on_reference(
+                            rigid_result, fixed_sitk, outTx, ref_img)
                     else:
                         result = elastic_registration(
                             ref_img, rigid_result,
@@ -665,6 +764,10 @@ if __name__ == "__main__":
                         )
                 else:
                     raise ValueError(f"未知配准模式: {mode}")
+
+                if result.shape[:2] != ref_img.shape[:2]:
+                    raise ValueError(
+                        f"配准输出尺寸 {result.shape[:2]} 与参考图 {ref_img.shape[:2]} 不一致")
 
                 # 保存（保留原文件名）
                 out_path = os.path.join(group_dir, mov_name)

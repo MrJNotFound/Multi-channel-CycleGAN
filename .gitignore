@@ -44,6 +44,7 @@
 /inference/*
 !/inference/__init__.py
 !/inference/infer.py
+!/inference/stitch_queue.py
 
 # Public usage/architecture docs only; manuscript/submission notes stay local.
 # Do not blanket-ignore PNG/SVG/JSON: documentation assets and configs matter.
