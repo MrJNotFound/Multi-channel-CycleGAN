@@ -9,6 +9,38 @@ from training.experiment_queue import queue_lock, run_jobs, select_experiments
 
 
 class ExperimentQueueTests(unittest.TestCase):
+    def test_planned_five_epoch_stop_and_pause_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = root / 'child.py'
+            child.write_text('''import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); p.mkdir(parents=True,exist_ok=True)
+(p/'latest_training_state.pth').write_text('state')
+if sys.argv[2]=='False':
+ print('@@MLCGUI '+json.dumps({'type':'run_paused','epoch':1}),flush=True)
+else:
+ (p/'5_training_state.pth').write_text('state')
+ print('@@MLCGUI '+json.dumps({'type':'run_finished'}),flush=True)
+''', encoding='utf-8')
+            jobs = [dict(id='short', label='short', values=dict(
+                name='short', checkpoints_dir=str(root / 'checkpoints'),
+                n_epochs=100, n_epochs_decay=100, stop_after_epoch=5))]
+
+            def command(values, python):
+                return [python, str(child), str(Path(values['checkpoints_dir']) / values['name']),
+                        str(values.get('continue_train', False))]
+
+            with patch('training.experiment_queue.command_for', side_effect=command):
+                run_jobs(jobs, root, {}, sys.executable)
+                state = json.loads((root / 'queue_state.json').read_text())
+                self.assertEqual(state['status'], 'paused')
+                self.assertEqual(state['jobs']['short']['status'], 'paused')
+                run_jobs(jobs, root, {}, sys.executable, resume=True)
+            state = json.loads((root / 'queue_state.json').read_text())
+            self.assertEqual(state['status'], 'completed')
+            self.assertFalse((root / 'checkpoints/short/200_training_state.pth').exists())
+
     def test_selection_is_unique_and_full_spif_is_last(self):
         plan = {'experiments': [{'id':'full','label':'SPIF'},
                                 {'id':'a','label':'CycleGAN'},

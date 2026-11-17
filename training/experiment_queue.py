@@ -151,7 +151,69 @@ def initial_state(jobs, dataset):
                                'attempts': 0} for job in jobs}}
 
 
-def run_jobs(jobs, output, dataset, python, resume=False):
+def final_epoch_for(values):
+    full = values['n_epochs'] + values['n_epochs_decay']
+    return min(full, values.get('stop_after_epoch') or full)
+
+
+def verify_completion(values, checkpoint_dir):
+    final_epoch = final_epoch_for(values)
+    state_path = checkpoint_dir / f'{final_epoch}_training_state.pth'
+    if values.get('weights_only'):
+        verify_weight_checkpoint(checkpoint_dir, str(final_epoch))
+    elif not state_path.is_file():
+        raise RuntimeError(f'Missing final training state: {state_path}')
+    if values.get('complete_epoch_state'):
+        import torch
+        state = torch.load(state_path, map_location='cpu', weights_only=True)
+        if state['next_epoch'] != final_epoch + 1:
+            raise RuntimeError(f'Unexpected final epoch in {state_path}')
+        for name in ('G_A', 'G_B', 'D_A', 'D_B'):
+            if not (checkpoint_dir / f'{final_epoch}_net_{name}.pth').is_file():
+                raise RuntimeError(f'Missing final network {name} in {checkpoint_dir}')
+    manifest_path = values.get('fixed_preview_manifest')
+    if manifest_path:
+        manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+        for epoch in values.get('fixed_preview_epochs', []):
+            if epoch > final_epoch:
+                continue
+            directory = checkpoint_dir / 'fixed_previews' / f'epoch_{epoch:03d}'
+            expected = ['contact_sheet.jpg', 'diagnostics.csv']
+            expected += [f'{r["id"]}.png' for r in manifest['locations']]
+            if any(not (directory / file).is_file() for file in expected):
+                raise RuntimeError(f'Incomplete fixed previews: {directory}')
+
+
+def verify_weight_checkpoint(directory, suffix):
+    path = directory / f'{suffix}_checkpoint.json'
+    if not path.is_file():
+        raise RuntimeError(f'Missing weight checkpoint metadata: {path}')
+    metadata = json.loads(path.read_text(encoding='utf-8'))
+    if (not metadata.get('epoch_boundary') or not str(suffix).isdigit()
+            or metadata['epoch'] != int(suffix) or metadata['next_epoch'] != int(suffix)+1):
+        raise RuntimeError(f'Not a completed epoch checkpoint: {path}')
+    if not metadata.get('networks'):
+        raise RuntimeError(f'Empty network list: {path}')
+    for name in metadata['networks']:
+        weights = directory / f'{suffix}_net_{name}.pth'
+        if not weights.is_file() or weights.stat().st_size == 0:
+            raise RuntimeError(f'Missing network weights: {weights}')
+    return metadata
+
+
+def latest_weight_epoch(directory):
+    epochs = sorted((int(p.name.split('_', 1)[0]) for p in directory.glob('*_checkpoint.json')
+                     if p.name.split('_', 1)[0].isdigit()), reverse=True)
+    for epoch in epochs:
+        try:
+            verify_weight_checkpoint(directory, str(epoch))
+            return epoch
+        except RuntimeError:
+            continue
+    raise RuntimeError(f'No complete numbered weight checkpoint in {directory}; refusing a silent restart.')
+
+
+def run_jobs(jobs, output, dataset, python, resume=False, on_job_complete=None):
     """Stop on failure; completed jobs never run again in this output directory."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -167,17 +229,59 @@ def run_jobs(jobs, output, dataset, python, resume=False):
         for job in jobs:
             item = state['jobs'][job['id']]
             if item['status'] == 'completed':
+                if on_job_complete:
+                    on_job_complete(job)
                 print(f"Skip completed: {job['id']} {job['label']}", flush=True)
                 continue
             values = dict(job['values'])
             checkpoint_dir = Path(values['checkpoints_dir']) / values['name']
+            if values.get('pause_file') and Path(values['pause_file']).exists():
+                state.update(status='paused', current=job['id'], updated=timestamp())
+                write_json(state_path, state)
+                print('Queue paused; remove the pause file and use --resume.', flush=True)
+                return
             if item['attempts']:
                 if not resume:
                     raise RuntimeError(f"{job['id']} was interrupted/failed. Inspect its log and use --resume.")
-                if not (checkpoint_dir / 'latest_training_state.pth').is_file():
+                if values.get('weights_only'):
+                    epoch = latest_weight_epoch(checkpoint_dir)
+                    if epoch > final_epoch_for(values):
+                        raise RuntimeError('Weight checkpoint is beyond the configured endpoint.')
+                    if epoch == final_epoch_for(values):
+                        verify_completion(values, checkpoint_dir)
+                        if on_job_complete:
+                            on_job_complete(job)
+                        item.update(status='completed', finished=timestamp(), recovered_final_save=True)
+                        write_json(state_path, state)
+                        continue
+                    values.update(continue_train=True, epoch=str(epoch), epoch_count=epoch+1)
+                    item['continuation'] = 'network weights only; optimizer and replay pools reset'
+                elif not (checkpoint_dir / 'latest_training_state.pth').is_file():
                     raise RuntimeError(f"No checkpoint for {job['id']}; refusing to silently restart it.")
-                values['continue_train'] = True
-                values['epoch'] = 'latest'
+                # An interruption after final save but before run_finished is recoverable.
+                if values.get('complete_epoch_state'):
+                    import torch
+                    recovered = torch.load(checkpoint_dir / 'latest_training_state.pth',
+                                           map_location='cpu', weights_only=True)
+                    if recovered['next_epoch'] > final_epoch_for(values):
+                        if recovered['next_epoch'] != final_epoch_for(values) + 1:
+                            raise RuntimeError('Recovery bundle is beyond the configured endpoint.')
+                        # Re-export final files from the atomic bundle if interrupted during export.
+                        for name, weights in recovered['networks'].items():
+                            destination = checkpoint_dir / f'{final_epoch_for(values)}_net_{name}.pth'
+                            torch.save(weights, destination)
+                        recovered.pop('networks')
+                        torch.save(recovered, checkpoint_dir / f'{final_epoch_for(values)}_training_state.pth')
+                        verify_completion(values, checkpoint_dir)
+                        item.update(status='completed', finished=timestamp(), recovered_final_save=True)
+                        write_json(state_path, state)
+                        if on_job_complete:
+                            on_job_complete(job)
+                        continue
+                    del recovered
+                if not values.get('weights_only'):
+                    values['continue_train'] = True
+                    values['epoch'] = 'latest'
             elif checkpoint_dir.exists() and any(checkpoint_dir.iterdir()):
                 raise RuntimeError(f'Refusing to overwrite existing experiment: {checkpoint_dir}')
             command = command_for(values, python)
@@ -189,8 +293,11 @@ def run_jobs(jobs, output, dataset, python, resume=False):
             write_json(state_path, state)
             print(f"Starting {job['id']}: {job['label']}", flush=True)
             env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8'}
+            if values.get('deterministic'):
+                env.update(CUBLAS_WORKSPACE_CONFIG=':4096:8', PYTHONHASHSEED=str(values['seed']))
             process = None
             finished = False
+            paused = False
             last_update = 0.0
             try:
                 with log_path.open('a', encoding='utf-8') as log:
@@ -208,6 +315,8 @@ def run_jobs(jobs, output, dataset, python, resume=False):
                             kind = event.get('type')
                             if kind == 'run_finished':
                                 finished = True
+                            if kind == 'run_paused':
+                                paused = True
                             if kind in {'progress', 'epoch_end', 'metrics', 'checkpoint'}:
                                 item['progress'] = {**item.get('progress', {}), **event}
                             now = time.monotonic()
@@ -218,11 +327,16 @@ def run_jobs(jobs, output, dataset, python, resume=False):
                             if kind == 'epoch_end':
                                 print(f"{job['id']} epoch {event['epoch']}/{event['final_epoch']} ({event['duration_seconds']:.0f}s)", flush=True)
                     code = process.wait()
+                    if code == 0 and paused:
+                        item.update(status='paused', finished=timestamp(), returncode=code)
+                        state.update(status='paused', updated=timestamp())
+                        write_json(state_path, state)
+                        return
                     if code != 0 or not finished:
                         raise RuntimeError(f"{job['id']} exited with code {code}; see {log_path}")
-                final_epoch = values['n_epochs'] + values['n_epochs_decay']
-                if not (checkpoint_dir / f'{final_epoch}_training_state.pth').is_file():
-                    raise RuntimeError(f'{job["id"]} did not save its final training state.')
+                verify_completion(values, checkpoint_dir)
+                if on_job_complete:
+                    on_job_complete(job)
                 item.update(status='completed', finished=timestamp(), returncode=code)
                 state['updated'] = timestamp()
                 write_json(state_path, state)
@@ -234,8 +348,9 @@ def run_jobs(jobs, output, dataset, python, resume=False):
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
-                item.update(status='failed', error=str(exc), finished=timestamp())
-                state.update(status='failed', updated=timestamp())
+                status = 'interrupted' if isinstance(exc, (KeyboardInterrupt, SystemExit)) else 'failed'
+                item.update(status=status, error=str(exc), finished=timestamp())
+                state.update(status=status, updated=timestamp())
                 write_json(state_path, state)
                 raise
         state.update(status='completed', current=None, updated=timestamp())

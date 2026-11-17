@@ -2,8 +2,8 @@ import os
 from PIL import Image, ImageOps
 
 # 设置输入输出路径
-input_dir = r'C:/Users/30927/Desktop/all/rigid_registered/registered_elastic'
-output_dir = r'C:/Users/30927/Desktop/all/rigid_registered/registered_elastic_inverse'
+input_dir = r"C:\Users\30927\Desktop\img_histology\stitch\bone\human_bone\human_bone_2_um_pix.jpg"
+output_dir = r"C:\Users\30927\Desktop\img_histology\stitch\bone\human_bone\human_bone_re_2_um_pix.jpg"
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 

@@ -41,6 +41,9 @@
 !/training/__init__.py
 !/training/train.py
 !/training/experiment_queue.py
+!/training/loss_ablation_queue.py
+!/training/state.py
+!/training/diagnostics.py
 /inference/*
 !/inference/__init__.py
 !/inference/infer.py
@@ -51,6 +54,7 @@
 /docs/*
 !/docs/GUI_CN.md
 !/docs/EXPERIMENT_QUEUE_CN.md
+!/docs/LOSS_ABLATION_QUEUE_CN.md
 !/docs/REPOSITORY_SCOPE.md
 !/docs/spif_v2/
 /docs/spif_v2/*

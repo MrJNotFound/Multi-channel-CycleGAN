@@ -4,13 +4,41 @@ import cv2
 import numpy as np
 from class_ImageViewer import InteractiveImageLabel
 from func_img_stitching import stitch_images_mosaic
+from func_stitching_estimation import estimate_stitching_parameters
 from func_img_preprocessing import rotate_image
 from func_tools import show_info, fit_preview
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSignalBlocker, QCoreApplication
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QFileDialog, QComboBox, QSpinBox,
     QListWidget, QGroupBox, QDoubleSpinBox, QProgressBar, QSlider
 )
+
+class AutoEstimateWorker(QThread):
+    result = pyqtSignal(object)
+    progress = pyqtSignal(int)
+    error = pyqtSignal(str)
+
+    def __init__(self, image_paths, rows, cols, direction_width, direction_height):
+        super().__init__()
+        self.arguments = (tuple(image_paths), rows, cols, direction_width, direction_height)
+
+    def run(self):
+        def report(current, total, _message):
+            if self.isInterruptionRequested():
+                raise InterruptedError
+            self.progress.emit(round(100 * current / max(1, total)))
+
+        try:
+            if self.isInterruptionRequested():
+                return
+            parameters = estimate_stitching_parameters(*self.arguments, progress=report)
+            if not self.isInterruptionRequested():
+                self.result.emit(parameters)
+        except InterruptedError:
+            pass
+        except Exception as error:
+            self.error.emit(str(error))
+
 
 class BatchMosaicWorker(QThread):
     progress = pyqtSignal(int)
@@ -106,7 +134,10 @@ class StitchPage(QWidget):
         self._preview_max_size = 1000
 
         self.stitch_worker: Optional[BatchMosaicWorker] = None
+        self.estimate_worker: Optional[AutoEstimateWorker] = None
+        self._estimate_signature = None
         self._build_ui()
+        QCoreApplication.instance().aboutToQuit.connect(self._stop_auto_estimation)
 
     def _build_ui(self):
         layout = QHBoxLayout(self)
@@ -140,6 +171,14 @@ class StitchPage(QWidget):
         # 拼接参数分组
         param_group = QGroupBox("拼接参数")
         param_layout = QVBoxLayout()
+
+        self.btn_auto_estimate = QPushButton("自动估计参数")
+        self.btn_auto_estimate.setToolTip(
+            "按当前行列、列表顺序和朝向，估计第一组图像的横纵重叠与旋转角度。\n"
+            "至少需要 2 行、2 列；重叠搜索范围 0%–30%，角度范围 ±8°。"
+        )
+        self.btn_auto_estimate.clicked.connect(self.on_auto_estimate)
+        param_layout.addWidget(self.btn_auto_estimate)
 
         # 列数
         self.sp_grid_col = QSpinBox()
@@ -265,6 +304,81 @@ class StitchPage(QWidget):
         layout.addWidget(ctrl_widget, 0)
         layout.addLayout(middle_layout, 0)
         layout.addLayout(preview_layout, 1)
+
+    def _auto_estimate_signature(self):
+        count = self.sp_grid_row.value() * self.sp_grid_col.value()
+        return (
+            tuple(self.image_paths[:count]), self.sp_grid_row.value(), self.sp_grid_col.value(),
+            self.cmb_dir_width.currentText(), self.cmb_dir_height.currentText(),
+            self.sp_angle.value(), self.sld_overlap_w.value(), self.sld_overlap_h.value(),
+        )
+
+    def on_auto_estimate(self):
+        if self.estimate_worker and self.estimate_worker.isRunning():
+            return
+        if self.stitch_worker and self.stitch_worker.isRunning():
+            show_info(self, "请等待当前拼接完成后再估计参数。")
+            return
+        rows, cols = self.sp_grid_row.value(), self.sp_grid_col.value()
+        if rows < 2 or cols < 2:
+            show_info(self, "自动估计需要至少 2 行、2 列，请先设置横向数量和纵向数量。")
+            return
+        if len(self.image_paths) < rows * cols:
+            show_info(self, f"当前设置需要 {rows * cols} 张图像，请先选择足够的图像。")
+            return
+        self._estimate_signature = self._auto_estimate_signature()
+        self.btn_auto_estimate.setEnabled(False)
+        self.btn_auto_estimate.setText("正在估计……")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("自动估计参数 %p%")
+        self.progress_bar.setVisible(True)
+        self.estimate_worker = AutoEstimateWorker(
+            self.image_paths[:rows * cols], rows, cols,
+            self.cmb_dir_width.currentText(), self.cmb_dir_height.currentText(),
+        )
+        self.estimate_worker.progress.connect(self.progress_bar.setValue)
+        self.estimate_worker.result.connect(self._on_auto_estimate_result)
+        self.estimate_worker.error.connect(lambda message: show_info(self, f"自动估计失败：{message}"))
+        self.estimate_worker.finished.connect(self._on_auto_estimate_finished)
+        self.estimate_worker.start()
+
+    def _on_auto_estimate_result(self, parameters):
+        if self._estimate_signature != self._auto_estimate_signature():
+            show_info(self, "图像或拼接参数已变化，估计结果未应用，请重新估计。")
+            return
+        controls = (self.sp_angle, self.sld_overlap_w, self.sld_overlap_h)
+        blockers = [QSignalBlocker(control) for control in controls]
+        try:
+            self.sp_angle.setValue(parameters["angle"])
+            for slider, key in (
+                (self.sld_overlap_w, "overlap_width"), (self.sld_overlap_h, "overlap_height")
+            ):
+                slider.setMaximum(max(slider.maximum(), parameters[key]))
+                slider.setValue(parameters[key])
+            self.lbl_overlap_w.setText(f"横向重叠: {self.sld_overlap_w.value()}")
+            self.lbl_overlap_h.setText(f"纵向重叠: {self.sld_overlap_h.value()}")
+        finally:
+            blockers.clear()
+        self._on_any_param_changed()
+        show_info(self, f"自动估计完成：横向重叠 {parameters['overlap_width']} 像素，"
+                  f"纵向重叠 {parameters['overlap_height']} 像素，旋转 {parameters['angle']:+.1f}°。\n"
+                  "参数已回填，可继续手动调整。")
+
+    def _on_auto_estimate_finished(self):
+        worker = self.estimate_worker
+        self.estimate_worker = None
+        self.btn_auto_estimate.setEnabled(True)
+        self.btn_auto_estimate.setText("自动估计参数")
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFormat("%p%")
+        if worker is not None:
+            worker.deleteLater()
+
+    def _stop_auto_estimation(self):
+        if self.estimate_worker and self.estimate_worker.isRunning():
+            self.estimate_worker.requestInterruption()
+            self.estimate_worker.wait()
 
     def _on_any_param_changed(self, *_):
         self._preview_cache.clear()
@@ -432,6 +546,9 @@ class StitchPage(QWidget):
         self.interactive_image.set_image(preview_img, reset_view=reset_view)
 
     def on_batch_stitch_async(self):
+        if self.estimate_worker and self.estimate_worker.isRunning():
+            show_info(self, "请等待自动估计完成后再拼接。")
+            return
         if self.stitch_worker and self.stitch_worker.isRunning():
             return
         if not self.image_paths:

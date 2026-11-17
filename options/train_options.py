@@ -24,6 +24,21 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--epoch_count', type=int, default=1, help='the starting epoch count, we save the model by <epoch_count>, <epoch_count>+<save_latest_freq>, ...')
         parser.add_argument('--stop_after_epoch', type=int, default=None,
                             help='stop this invocation after the given epoch without changing n_epochs or n_epochs_decay')
+        parser.add_argument('--complete_epoch_state', action='store_true',
+                            help='atomically save a full latest G/D/optimizer/RNG/pool bundle every epoch')
+        parser.add_argument('--weights_only', action='store_true',
+                            help='CycleGAN-style checkpoints: save G/D weights and small progress JSON only')
+        parser.add_argument('--cyclegan_runtime', action='store_true',
+                            help='use original CycleGAN backend settings: cuDNN benchmark/TF32 on, strict determinism off')
+        parser.add_argument('--record_initial_hashes', action='store_true',
+                            help='record initial network hashes once to audit same-seed initialization')
+        parser.add_argument('--fixed_preview_manifest', type=str, default=None,
+                            help='fixed BF/AF diagnostic locations and deterministic transform JSON')
+        parser.add_argument('--fixed_preview_epochs', type=int, nargs='+', default=[])
+        parser.add_argument('--pause_file', type=str, default=None,
+                            help='if this file exists, pause after saving the current epoch')
+        parser.add_argument('--deterministic', action='store_true',
+                            help='require deterministic PyTorch algorithms and disable TF32/cuDNN benchmarking')
         parser.add_argument('--phase', type=str, default='train', help='train, val, test, etc')
         # training parameters
         parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs with the initial learning rate')

@@ -56,9 +56,12 @@ def get_scheduler(optimizer, opt):
     See https://pytorch.org/docs/stable/optim.html for more details.
     """
     if opt.lr_policy == "linear":
+        # Restored scheduler.last_epoch already includes completed epochs.
+        # Capture the original offset, rather than a mutable resume epoch_count.
+        start_epoch = getattr(opt, 'scheduler_epoch_count', opt.epoch_count)
 
         def lambda_rule(epoch):
-            lr_l = 1.0 - max(0, epoch + opt.epoch_count - opt.n_epochs) / float(opt.n_epochs_decay + 1)
+            lr_l = 1.0 - max(0, epoch + start_epoch - opt.n_epochs) / float(opt.n_epochs_decay + 1)
             return lr_l
 
         scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)

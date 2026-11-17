@@ -155,6 +155,10 @@ stitched/ 保存最终 PNG，inference_state.json 记录进度，inference_plan.
 
 ## 关键参数
 
+固定 SCCF 的损失消融可使用 `training/loss_ablation_queue.py`：默认依次执行
+40 次五轮短跑和 21 次完整训练。支持独立损失系数、恒定/衰减模式、固定诊断预览和
+CycleGAN 默认计算设置及仅保存网络权重。操作与输出说明见 [损失消融队列](docs/LOSS_ABLATION_QUEUE_CN.md)。
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--model` | `cycle_gan_single_none_base` | 架构_类别_融合_额外损失，仅支持注册组合 |
@@ -165,7 +169,7 @@ stitched/ 保存最终 PNG，inference_state.json 记录进度，inference_plan.
 | `--spif_version` | `v2` | `v1`=通道融合，`v2`=通道—空间融合；仅 Fusion 组合使用 |
 | `--lambda_A/B` | `10.0` | 循环一致性损失权重 |
 | `--lambda_identity` | `0.5` | 身份映射损失权重（input_nc ≠ output_nc 时自动禁用） |
-| `--lambda_content` | `1.0` | SP loss 总倍率；设为 0 可关闭整个 SP loss |
+| `--lambda_content` | `1.0` | 旧系数模式的 SP loss 总倍率；显式独立系数会覆盖该模式 |
 | `--lambda_sp` | `1.0` | SPIF 结构保持损失的初始强度 |
 | `--lambda_intensity` | `0.5` | 粗粒度组织明暗分布项相对权重 |
 | `--grad_channel_weights` | 等权 | BF/AF 在梯度融合及强度通道均值中的权重，例如 `0.5 0.5` |

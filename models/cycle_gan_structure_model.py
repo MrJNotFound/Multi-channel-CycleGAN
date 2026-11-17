@@ -65,6 +65,12 @@ class SPIFModel(BaseModel):
                                      "the entire structure-preserving loss (useful for ablation or fine-tuning)")
             parser.add_argument("--lambda_sp", type=float, default=1.0,
                                 help="initial weight of the early-training SPIF loss")
+            parser.add_argument('--sp_grad_weight', type=float, default=None,
+                                help='independent effective gradient coefficient; overrides legacy lambda weights')
+            parser.add_argument('--sp_intensity_weight', type=float, default=None,
+                                help='independent effective intensity coefficient; overrides legacy lambda weights')
+            parser.add_argument('--sp_grad_schedule', choices=('cosine', 'constant'), default='cosine')
+            parser.add_argument('--sp_intensity_schedule', choices=('cosine', 'constant'), default='cosine')
             parser.add_argument(
                 "--lambda_intensity",
                 dest="lambda_intensity", type=float, default=0.5,
@@ -173,6 +179,14 @@ class SPIFModel(BaseModel):
         self.lambda_content = opt.lambda_content
         self.lambda_sp = opt.lambda_sp
         self.lambda_intensity = opt.lambda_intensity
+        self.sp_grad_weight = getattr(opt, 'sp_grad_weight', None)
+        self.sp_intensity_weight = getattr(opt, 'sp_intensity_weight', None)
+        self.sp_grad_schedule = getattr(opt, 'sp_grad_schedule', 'cosine')
+        self.sp_intensity_schedule = getattr(opt, 'sp_intensity_schedule', 'cosine')
+        for name in ('sp_grad_weight', 'sp_intensity_weight'):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise ValueError(f'--{name} must be finite and non-negative.')
         self.sp_grad_decay_fraction = opt.sp_grad_decay_fraction
         self.sp_intensity_decay_fraction = getattr(
             opt, "sp_intensity_decay_fraction", 0.025
@@ -240,10 +254,15 @@ class SPIFModel(BaseModel):
             self.sp_intensity_decay_fraction,
         )
         common_weight = self.lambda_content * self.lambda_sp
-        gradient_weight = common_weight * gradient_schedule
-        intensity_weight = (
-            common_weight * self.lambda_intensity * intensity_schedule
-        )
+        if self.sp_grad_schedule == 'constant':
+            gradient_schedule = 1.0
+        if self.sp_intensity_schedule == 'constant':
+            intensity_schedule = 1.0
+        gradient_initial = common_weight if self.sp_grad_weight is None else self.sp_grad_weight
+        intensity_initial = (common_weight * self.lambda_intensity
+                             if self.sp_intensity_weight is None else self.sp_intensity_weight)
+        gradient_weight = gradient_initial * gradient_schedule
+        intensity_weight = intensity_initial * intensity_schedule
         return gradient_weight, intensity_weight
 
     def set_input(self, input):
@@ -652,9 +671,12 @@ class CoarseIntensityDistributionLoss(torch.nn.Module):
             ),
             kernel_y,
         )
-        return F.adaptive_avg_pool2d(
-            low, output_size=(self.pool_size, self.pool_size)
-        )
+        if low.shape[-2] % self.pool_size == 0 and low.shape[-1] % self.pool_size == 0:
+            # Identical non-overlapping averaging bins for 256 -> 8, with a
+            # deterministic CUDA backward (adaptive_avg_pool2d lacks one).
+            return F.avg_pool2d(low, kernel_size=(low.shape[-2] // self.pool_size,
+                                                 low.shape[-1] // self.pool_size))
+        return F.adaptive_avg_pool2d(low, output_size=(self.pool_size, self.pool_size))
 
     def _correlation_and_validity(self, source, translated,
                                   source_weights=None,
