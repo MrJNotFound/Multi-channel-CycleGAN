@@ -1,4 +1,3 @@
-import importlib.util
 import math
 import os
 from pathlib import Path
@@ -8,14 +7,11 @@ import time
 import numpy as np
 import pytest
 from PIL import Image
+from tool.code_GUI.processing import large_image_backend as estimation
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GUI_DIR = ROOT / "tool" / "code_GUI"
 LARGE_IMAGE_SRC = ROOT / "tool" / "large-image-tool" / "src"
-spec = importlib.util.spec_from_file_location("stitch_estimation_under_test", GUI_DIR / "func_stitching_estimation.py")
-estimation = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(estimation)
 
 
 @pytest.fixture
@@ -113,14 +109,13 @@ def qt_app():
 
 @pytest.fixture
 def page(qt_app, monkeypatch):
-    monkeypatch.syspath_prepend(str(GUI_DIR))
-    import class_StitchingPage
+    from tool.code_GUI.ui.pages import stitching
 
     messages = []
-    monkeypatch.setattr(class_StitchingPage, "show_info", lambda parent, text: messages.append(text))
-    widget = class_StitchingPage.StitchPage()
-    yield widget, class_StitchingPage, messages
-    widget._stop_auto_estimation()
+    monkeypatch.setattr(stitching, "show_info", lambda parent, text: messages.append(text))
+    widget = stitching.StitchingPage()
+    yield widget, stitching, messages
+    widget._stop_workers()
     qt_app.processEvents()
     widget.deleteLater()
     qt_app.processEvents()

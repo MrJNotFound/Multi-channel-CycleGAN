@@ -1,7 +1,8 @@
-import os
+from importlib import import_module
+from pathlib import Path
 import cv2
 import numpy as np
-import SimpleITK as sitk
+from .images import read_image, write_image
 
 def remove_scale_from_affine(mat):
     R = mat[:, :2]
@@ -68,6 +69,8 @@ def elastic_registration(
     optimizer_tol=1e-5,
     optimizer_bounds=(-100, 100)
 ):
+    import SimpleITK as sitk
+
     if shrink_factors is None:
         shrink_factors = [5]
     if smoothing_sigmas is None:
@@ -132,128 +135,65 @@ def elastic_registration(
     return elastic_registered
 
 def batch_register_images_anchor_subseq(
-        image_paths,
-        output_folder,
-        anchor_interval=10,
-        mode='rigid',
-        only_rigid=False,
-        scale_factor=0.2,
-        shrink_factors=None,
-        smoothing_sigmas=None,
-        n_matches=200,
-        mesh_size=4,
-        optimizer_iterations=50,
-        optimizer_tol=1e-5,
-        optimizer_bounds=(-100, 100),
-        progress_callback=None
+    image_paths,
+    output_folder,
+    anchor_interval=10,
+    mode="rigid",
+    only_rigid=False,
+    scale_factor=0.2,
+    shrink_factors=None,
+    smoothing_sigmas=None,
+    n_matches=200,
+    mesh_size=4,
+    optimizer_iterations=50,
+    optimizer_tol=1e-5,
+    optimizer_bounds=(-100, 100),
+    progress_callback=None,
+    *,
+    check_interrupted=None,
 ):
-    if shrink_factors is None:
-        shrink_factors = [5]
-    if smoothing_sigmas is None:
-        smoothing_sigmas = [1]
-    os.makedirs(output_folder, exist_ok=True)
-    if len(image_paths) == 0:
-        return
-    N = len(image_paths)
-    anchor_indices = list(range(0, N, anchor_interval))
-    if anchor_indices[-1] != N-1:
-        anchor_indices.append(N-1)
+    modes = {"rigid": False, "刚性": False, "rigid+elastic": True, "刚性+弹性": True}
+    if anchor_interval < 1 or mode not in modes:
+        raise ValueError("配准模式或锚点间隔无效。")
+    if modes[mode]:
+        import_module("SimpleITK")
+    paths = tuple(map(Path, image_paths))
+    destination = Path(output_folder)
+    targets = [destination / path.name for path in paths]
+    resolved_targets = {path.resolve() for path in targets}
+    if len(resolved_targets) != len(paths):
+        raise ValueError("所选图像含有同名文件，请分开保存。")
+    if resolved_targets.intersection(path.resolve() for path in paths):
+        raise ValueError("输出路径会覆盖输入图像，请选择其他目录。")
+    destination.mkdir(parents=True, exist_ok=True)
 
-    total_steps = len(anchor_indices)
-    for i in range(len(anchor_indices)-1):
-        total_steps += (anchor_indices[i+1] - anchor_indices[i] - 1)
-
-    finished_steps = 0
-    anchor_results = {}
-    for idx, anchor_idx in enumerate(anchor_indices):
-        img_path = image_paths[anchor_idx]
-        img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        if img is None:
-            finished_steps += 1
-            if progress_callback:
-                percent = int(finished_steps / total_steps * 100)
-                progress_callback(percent)
-            continue
-        if idx == 0:
-            anchor_results[anchor_idx] = img
-            cv2.imwrite(os.path.join(output_folder, os.path.basename(img_path)), img)  # type: ignore
-        else:
-            prev_idx = anchor_indices[idx-1]
-            prev_img = anchor_results[prev_idx]
-            rigid_result = rigid_registration(
-                prev_img, img,
-                n_matches=n_matches,
-                scale_factor=scale_factor,
-                only_rigid=only_rigid
-            )
-            if rigid_result is None:
-                finished_steps += 1
-                if progress_callback:
-                    percent = int(finished_steps / total_steps * 100)
-                    progress_callback(percent)
-                continue
-            if mode == '刚性':
-                result = rigid_result
-            elif mode == '刚性+弹性':
-                result = elastic_registration(
-                    prev_img, rigid_result,
-                    mesh_size=mesh_size,
-                    shrink_factors=shrink_factors,
-                    smoothing_sigmas=smoothing_sigmas,
-                    optimizer_iterations=optimizer_iterations,
-                    optimizer_tol=optimizer_tol,
-                    optimizer_bounds=optimizer_bounds
-                )
-            else:
-                raise ValueError('mode参数应为"rigid"或"rigid+elastic"')
-            anchor_results[anchor_idx] = result
-            cv2.imwrite(os.path.join(output_folder, os.path.basename(img_path)), result)  # type: ignore
-        finished_steps += 1
+    anchor = None
+    saved, errors = [], []
+    for index, (path, target) in enumerate(zip(paths, targets)):
+        if check_interrupted is not None:
+            check_interrupted()
+        try:
+            image = read_image(path, cv2.IMREAD_COLOR)
+            if image is None:
+                raise ValueError("无法读取图像")
+            result = image
+            if anchor is not None:
+                result = rigid_registration(anchor, image, n_matches=n_matches,
+                                            scale_factor=scale_factor, only_rigid=only_rigid)
+                if result is None:
+                    raise ValueError("匹配点不足，无法进行刚性配准")
+                if modes[mode]:
+                    result = elastic_registration(
+                        anchor, result, mesh_size=mesh_size, shrink_factors=shrink_factors,
+                        smoothing_sigmas=smoothing_sigmas, optimizer_iterations=optimizer_iterations,
+                        optimizer_tol=optimizer_tol, optimizer_bounds=optimizer_bounds,
+                    )
+            write_image(target, result)
+            if anchor is None or index % anchor_interval == 0 or index == len(paths) - 1:
+                anchor = result
+            saved.append(target)
+        except (OSError, ValueError, RuntimeError, cv2.error) as error:
+            errors.append(f"{path.name}：{error}")
         if progress_callback:
-            percent = int(finished_steps / total_steps * 100)
-            progress_callback(percent)
-
-    for i in range(len(anchor_indices)-1):
-        anchor_idx = anchor_indices[i]
-        next_anchor_idx = anchor_indices[i+1]
-        anchor_img = anchor_results[anchor_idx]
-        for j in range(anchor_idx+1, next_anchor_idx):
-            img_path = image_paths[j]
-            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-            if img is None:
-                finished_steps += 1
-                if progress_callback:
-                    percent = int(finished_steps / total_steps * 100)
-                    progress_callback(percent)
-                continue
-            rigid_result = rigid_registration(
-                anchor_img, img,
-                n_matches=n_matches,
-                scale_factor=scale_factor,
-                only_rigid=only_rigid
-            )
-            if rigid_result is None:
-                finished_steps += 1
-                if progress_callback:
-                    percent = int(finished_steps / total_steps * 100)
-                    progress_callback(percent)
-                continue
-            if mode == '刚性':
-                result = rigid_result
-            elif mode == '刚性+弹性':
-                result = elastic_registration(
-                    anchor_img, rigid_result,
-                    mesh_size=mesh_size,
-                    shrink_factors=shrink_factors,
-                    smoothing_sigmas=smoothing_sigmas,
-                    optimizer_iterations=optimizer_iterations,
-                    optimizer_tol=optimizer_tol,
-                    optimizer_bounds=optimizer_bounds
-                )
-            else:
-                raise ValueError('mode参数应为"rigid"或"rigid+elastic"')
-            cv2.imwrite(os.path.join(output_folder, os.path.basename(img_path)), result)  # type: ignore
-            finished_steps += 1
-            if progress_callback:
-                percent = int(finished_steps / total_steps * 100)
-                progress_callback(percent)
+            progress_callback(round(100 * (index + 1) / len(paths)))
+    return saved, errors

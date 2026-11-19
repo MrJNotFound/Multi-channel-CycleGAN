@@ -1,7 +1,3 @@
-import glob
-import os
-import cv2
-import imageio.v3 as iio
 import napari
 import numpy as np
 from PyQt6.QtCore import Qt
@@ -12,61 +8,7 @@ from PyQt6.QtWidgets import (
 from scipy.ndimage import label as ndi_label
 from skimage.measure import regionprops_table
 
-
-def load_stack_multi_type(folder, patterns, downsample=1, interp=cv2.INTER_AREA):
-    files = []
-    for pattern in patterns:
-        files += glob.glob(os.path.join(folder, pattern))
-    files = sorted(files)
-    if not files:
-        raise FileNotFoundError(f"No files found in {folder} with patterns {patterns}")
-    stack = []
-    for f in files:
-        img = iio.imread(f)
-        if img.ndim == 2:
-            img = img[..., np.newaxis]
-        if downsample > 1:
-            h, w = img.shape[:2]
-            img = cv2.resize(img, (w // downsample, h // downsample), interpolation=interp)
-        stack.append(img)
-    arr = np.stack(stack, axis=0)
-    if arr.shape[-1] == 1:
-        arr = np.squeeze(arr, axis=-1)
-    return arr
-
-
-def random_color_dict(labels):
-    import matplotlib
-    unique_labels = np.unique(labels)
-    color_dict = {}
-    rng = np.random.default_rng(42)
-    colormap = matplotlib.colormaps['tab20']
-    for i, label_val in enumerate(unique_labels):
-        if label_val == 0:
-            continue
-        if i < 20:
-            rgba = colormap(i)
-            color = (float(rgba[0]), float(rgba[1]), float(rgba[2]), 1.0)  # 确保是float类型
-        else:
-            color_vals = rng.uniform(0.1, 0.9, size=3).tolist()
-            color = (float(color_vals[0]), float(color_vals[1]), float(color_vals[2]), 1.0)  # 使用元组和float
-        color_dict[int(label_val)] = color  # type: ignore
-    return color_dict
-
-
-def repair_mask(mask, closing_size=3, dilation_size=1):
-    from scipy.ndimage import generate_binary_structure, binary_closing, binary_dilation
-    pad_width = max(closing_size, dilation_size)
-    # 三维padding
-    mask_padded = np.pad(mask, pad_width, mode='constant', constant_values=0)
-    structure = generate_binary_structure(3, 2)
-    closed = binary_closing(mask_padded, structure=structure, iterations=closing_size)
-    if dilation_size > 0:
-        closed = binary_dilation(closed, structure=structure, iterations=dilation_size)
-    # 裁剪回原始大小
-    slices = tuple(slice(pad_width, -pad_width) for _ in range(3))
-    closed = closed[slices]
-    return closed
+from ...processing.volume import load_image_stack, repair_mask
 
 
 class NapariEmbed(QWidget):
@@ -132,7 +74,7 @@ class NapariEmbed(QWidget):
         self.update_button_status(axis)
 
 
-class Viewer3DLabelPage(QMainWindow):
+class VolumeViewerPage(QMainWindow):
     def __init__(self):
         super().__init__()
         self.last_single_label = None
@@ -150,7 +92,6 @@ class Viewer3DLabelPage(QMainWindow):
         self.label_stack = None
         self.labeled_cells = None
         self.num_cells = 0
-        self.color_dict = {}
         self.img_loaded = False
         self.label_loaded = False
         self._build_ui()
@@ -284,7 +225,7 @@ class Viewer3DLabelPage(QMainWindow):
         self.img_folder = folder
         self.img_loaded = False
         try:
-            self.img_stack = load_stack_multi_type(self.img_folder, self.img_patterns, downsample=self.downsample)
+            self.img_stack = load_image_stack(self.img_folder, self.img_patterns, downsample=self.downsample)
             self.img_loaded = True
             self.status.setText(f"原图文件夹已读取: {folder}")
         except Exception as e:
@@ -301,7 +242,7 @@ class Viewer3DLabelPage(QMainWindow):
         self.label_folder = folder
         self.label_loaded = False
         try:
-            self.label_stack = load_stack_multi_type(self.label_folder, self.label_patterns)
+            self.label_stack = load_image_stack(self.label_folder, self.label_patterns)
             self.label_loaded = True
             self.status.setText(f"Label文件夹已读取: {folder}")
         except Exception as e:
@@ -389,7 +330,6 @@ class Viewer3DLabelPage(QMainWindow):
                 mask = np.array(self.label_stack != 0, dtype=np.uint8)
                 mask_repaired = repair_mask(mask, closing_size=3, dilation_size=1)
                 self.labeled_cells, self.num_cells = ndi_label(mask_repaired)
-                self.color_dict = random_color_dict(self.labeled_cells)
                 self.layer_label = viewer.add_labels(
                     self.labeled_cells,
                     name="cells",

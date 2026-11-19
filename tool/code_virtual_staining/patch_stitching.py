@@ -1,3 +1,5 @@
+"""按 patch 实际坐标融合，支持末行/末列向内回移的非等距重叠。"""
+
 import re
 from pathlib import Path
 import tkinter as tk
@@ -59,11 +61,16 @@ def _most_common_positive_diff(vals):
     if not diffs:
         return None
     uniq, cnt = np.unique(np.array(diffs, dtype=np.int32), return_counts=True)
-    return int(uniq[np.argmax(cnt)])
+    # 尾部回移产生较小的末步长；出现次数相同时用较大的常规步长作显示。
+    return int(uniq[cnt == cnt.max()].max())
 
 
 def stitch_group(items, orig_w, orig_h, weight_mode, ignore_padding, pad_color_bgr, pad_tol):
-    """对一组 patch 进行拼接，返回拼接后的大图。"""
+    """按每张 patch 的实际 x/y 拼接，不以固定步长重建网格。
+
+    新版分块器末窗恰好到图像边缘，因此 max(x)+patch_w、max(y)+patch_h
+    可精确恢复切分图像的尺寸；旧的 padding 图块仍需手动提供宽高来裁边。
+    """
     # 读第一张确定patch大小
     first = cv2.imread(str(items[0][2]), cv2.IMREAD_COLOR)
     if first is None:
@@ -120,7 +127,7 @@ def stitch_group(items, orig_w, orig_h, weight_mode, ignore_padding, pad_color_b
 
     wsum_safe = np.maximum(wsum, 1e-6)
     out = acc / wsum_safe
-    out = np.clip(out, 0, 255).astype(np.uint8)
+    out = np.clip(np.rint(out), 0, 255).astype(np.uint8)
     return out, pw, ph, sx, sy, W, H
 
 
@@ -129,7 +136,7 @@ if __name__ == "__main__":
     root.withdraw()
 
     # 1. 选择 patch 文件夹
-    patch_dir = filedialog.askdirectory(title="选择 patch 文件夹")
+    patch_dir = filedialog.askdirectory(title="选择单张原图对应的 patch 文件夹")
     if not patch_dir:
         print("未选择文件夹，退出。")
         root.destroy()
@@ -156,7 +163,7 @@ if __name__ == "__main__":
     tk.Label(param_win, text="融合权重窗:", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=(15, 3))
     tk.OptionMenu(param_win, wmode_var, "hann", "gaussian").grid(row=r, column=1, sticky="w")
     r += 1
-    tk.Checkbutton(param_win, text="忽略白色 padding 区域", variable=pad_var, font=("", 11)).grid(row=r, column=0, columnspan=2, sticky="w", padx=15, pady=3)
+    tk.Checkbutton(param_win, text="忽略白色区域（仅旧版 padding 图块需要）", variable=pad_var, font=("", 11)).grid(row=r, column=0, columnspan=2, sticky="w", padx=15, pady=3)
     r += 1
     tk.Label(param_win, text="原始宽度 (留空=自动推断):", font=("", 11)).grid(row=r, column=0, sticky="e", padx=(15, 2), pady=3)
     tk.Entry(param_win, textvariable=ow_var, width=8).grid(row=r, column=1, sticky="w")

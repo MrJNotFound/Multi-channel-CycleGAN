@@ -1,66 +1,29 @@
 import os
-from typing import List, Optional
+from functools import partial
+from typing import List
 import cv2
-from func_img_registrating import batch_register_images_anchor_subseq
-from func_tools import show_info
-from class_ImageViewer import InteractiveImageLabel
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QFileDialog, QCheckBox,
     QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
     QListWidget
 )
+from ...processing.images import read_image
+from ...processing.registration import batch_register_images_anchor_subseq
+from ..tasks import TaskThread, stop_tasks
+from ..widgets import InteractiveImageLabel, show_info
 
-class RegisterWorker(QThread):
-    progress = pyqtSignal(int)
-    finished = pyqtSignal()
-    message = pyqtSignal(str)
-
-    def __init__(self, image_paths: List[str], output_folder: str, params: dict):
-        super().__init__()
-        self.image_paths = image_paths
-        self.output_folder = output_folder
-        self.params = params
-        self._cancel = False
-
-    def run(self):
-        try:
-            batch_register_images_anchor_subseq(
-                image_paths=self.image_paths,
-                output_folder=self.output_folder,
-                anchor_interval=self.params.get('anchor_interval', 8),
-                mode=self.params.get('mode', 'rigid'),
-                only_rigid=self.params.get('only_rigid', False),
-                scale_factor=self.params.get('scale_factor', 0.2),
-                shrink_factors=self.params.get('shrink_factors', [5]),
-                smoothing_sigmas=self.params.get('smoothing_sigmas', [1]),
-                n_matches=self.params.get('n_matches', 200),
-                mesh_size=self.params.get('mesh_size', 4),
-                optimizer_iterations=self.params.get('optimizer_iterations', 50),
-                optimizer_tol=self.params.get('optimizer_tol', 1e-5),
-                optimizer_bounds=self.params.get('optimizer_bounds', (-100, 100)),
-                progress_callback=self._on_progress
-            )
-        except Exception as e:
-            self.message.emit(f"配准出错: {str(e)}")  # type: ignore
-        self.finished.emit()  # type: ignore
-
-    def _on_progress(self, val):
-        self.progress.emit(val)  # type: ignore
-    def cancel(self):
-        self._cancel = True
 
 class RegistrationPage(QWidget):
     def __init__(self):
         super().__init__()
-        self.lbl_output = None
         self.image_paths: List[str] = []
         self.result_paths: List[str] = []
         self.current_index: int = -1
         self.result_index: int = -1
-        self.output_folder: str = ""
-        self.worker: Optional[RegisterWorker] = None
+        self.worker: TaskThread | None = None
         self._build_ui()
+        QCoreApplication.instance().aboutToQuit.connect(self._stop_worker)
 
     def _build_ui(self):
         layout = QHBoxLayout(self)
@@ -253,7 +216,7 @@ class RegistrationPage(QWidget):
         img_path = self.image_paths[row]
         filename = os.path.basename(img_path)
         try:
-            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            img = read_image(img_path, cv2.IMREAD_COLOR)
             if img is not None:
                 self.lbl_image_info.setText(f"文件: {filename}")
                 self.interactive_image.set_image(img, reset_view=True)
@@ -274,7 +237,7 @@ class RegistrationPage(QWidget):
         result_path = self.result_paths[row]
         filename = os.path.basename(result_path)
         try:
-            img = cv2.imread(result_path, cv2.IMREAD_COLOR)
+            img = read_image(result_path, cv2.IMREAD_COLOR)
             if img is not None:
                 self.lbl_result_info.setText(f"结果文件: {filename}")
                 self.interactive_image.set_image(img, reset_view=True)
@@ -284,13 +247,6 @@ class RegistrationPage(QWidget):
         except Exception as e:
             self.lbl_result_info.setText(f"结果文件: {filename}\n读取错误: {str(e)}")
             self.interactive_image.set_image(None, reset_view=True)
-
-    def on_choose_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
-        if not folder:
-            return
-        self.output_folder = folder
-        self.lbl_output.setText(f"输出路径: {folder}")
 
     @staticmethod
     def _parse_list(text: str) -> List[float]:
@@ -306,15 +262,13 @@ class RegistrationPage(QWidget):
         return [int(v) if isinstance(v, float) and v.is_integer() else v for v in vals]
 
     def on_run(self):
+        if self.worker is not None:
+            return
         if not self.image_paths:
             show_info(self, "请先选择图像")
             return
         output_folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
         if not output_folder:
-            return
-        self.output_folder = output_folder
-        if self._contains_chinese(self.output_folder):
-            show_info(self, "错误：输出路径不能包含中文字符！\n请选择不含中文的路径。")
             return
         try:
             tol_val = float(self.le_tol.text())
@@ -334,39 +288,47 @@ class RegistrationPage(QWidget):
             optimizer_tol=tol_val,
             optimizer_bounds=tuple(bounds_list[:2]) if bounds_list else (-100, 100)
         )
-        self.progress_bar.setRange(0, len(self.image_paths))
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
+        self.progress_bar.show()
         self.btn_run.setEnabled(False)
-        self.worker = RegisterWorker(self.image_paths, self.output_folder, params)
-        self.worker.progress.connect(self.progress_bar.setValue)  # type: ignore
-        self.worker.finished.connect(self._on_done)  # type: ignore
-        self.worker.message.connect(lambda msg: show_info(self, msg))  # type: ignore
-        self.worker.start()
+        paths = tuple(self.image_paths)
 
-    @staticmethod
-    def _contains_chinese(text: str) -> bool:
-        for char in text:
-            if '\u4e00' <= char <= '\u9fff':
-                return True
-        return False
+        def work(progress, check_interrupted):
+            return batch_register_images_anchor_subseq(
+                paths, output_folder, progress_callback=progress, check_interrupted=check_interrupted, **params,
+            )
 
-    def _on_done(self):
-        self.progress_bar.setVisible(False)
+        worker = TaskThread(work, self)
+        self.worker = worker
+        worker.progress.connect(self.progress_bar.setValue)
+        worker.finished.connect(partial(self._on_done, output_folder))
+        worker.start()
+
+    def _stop_worker(self):
+        stop_tasks(self.worker)
+
+    def _on_done(self, destination):
+        worker = self.worker
+        self.worker = None
+        worker.deleteLater()
+        self.progress_bar.hide()
         self.btn_run.setEnabled(True)
-        show_info(self, f"配准处理完成！\n结果保存在: {self.output_folder}")
-        self.result_paths.clear()
+        if worker.cancelled:
+            return
+        if worker.error:
+            show_info(self, f"配准失败：{worker.error}")
+            return
+        saved, errors = worker.result
+        self.result_paths = [str(path) for path in saved]
         self.result_list_widget.clear()
-        if os.path.isdir(self.output_folder):
-            for fname in os.listdir(self.output_folder):
-                if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')):
-                    fullpath = os.path.join(self.output_folder, fname)
-                    self.result_paths.append(fullpath)
-                    self.result_list_widget.addItem(fname)
-            if self.result_paths:
-                self.result_list_widget.setCurrentRow(0)
-                self.lbl_result_info.setText(f"已发现 {len(self.result_paths)} 个结果文件")
-            else:
-                self.lbl_result_info.setText("未发现结果文件")
+        self.result_list_widget.addItems([path.name for path in saved])
+        if saved:
+            self.result_list_widget.setCurrentRow(0)
+            self.lbl_result_info.setText(f"已生成 {len(saved)} 个结果文件")
         else:
-            self.lbl_result_info.setText("输出目录不存在")
+            self.lbl_result_info.setText("未生成结果文件")
+        message = f"配准完成。已保存 {len(saved)} 张到\n{destination}"
+        if errors:
+            message += f"\n失败 {len(errors)} 张。\n" + "\n".join(errors)
+        show_info(self, message)

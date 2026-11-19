@@ -1,13 +1,44 @@
-import numpy as np
+"""Shared Qt image preview and message widgets."""
+
 from typing import Optional
-from func_tools import np_to_qimage
-from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QPixmap, QPainter, QWheelEvent, QMouseEvent
+
+import cv2
+import numpy as np
+from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtGui import QImage, QMouseEvent, QPainter, QPixmap, QWheelEvent
+from PyQt6.QtWidgets import QLabel, QMessageBox
+
+
+def np_to_qimage(img: np.ndarray) -> QImage:
+    """Convert grayscale, BGR or BGRA pixels into a Qt-owned display image."""
+    if img is None:
+        return QImage()
+    if img.dtype != np.uint8:
+        img = cv2.normalize(np.nan_to_num(img), None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    if img.ndim == 3 and img.shape[2] == 1:
+        img = img[..., 0]
+    if img.ndim == 2:
+        image_format = QImage.Format.Format_Grayscale8
+    elif img.ndim == 3 and img.shape[2] == 3:
+        image_format = QImage.Format.Format_BGR888
+    elif img.ndim == 3 and img.shape[2] == 4:
+        if not img.flags.c_contiguous:
+            img = np.ascontiguousarray(img)
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+        image_format = QImage.Format.Format_RGBA8888
+    else:
+        raise ValueError("预览支持灰度、BGR 或 BGRA 图像。")
+    pixels = np.ascontiguousarray(img)
+    h, w = pixels.shape[:2]
+    return QImage(pixels.data, w, h, pixels.strides[0], image_format).copy()
+
+
+def show_info(parent, msg: str):
+    QMessageBox.information(parent, "提示", msg)
 
 
 class InteractiveImageLabel(QLabel):
-# 支持缩放和拖拽的图像显示控件
+    """Image preview with zooming and panning."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)

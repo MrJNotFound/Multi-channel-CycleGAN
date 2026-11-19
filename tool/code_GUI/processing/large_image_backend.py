@@ -1,8 +1,14 @@
-"""将 large-image-tool 的全局几何估计适配为现有拼接页的像素参数。"""
+"""Adapters for the shared large-image stitching and directional Median algorithms."""
 
 import math
 from pathlib import Path
 import sys
+
+
+def _enable_large_image_source():
+    source = Path(__file__).resolve().parents[2] / "large-image-tool" / "src"
+    if source.is_dir() and str(source) not in sys.path:
+        sys.path.insert(0, str(source))
 
 
 def estimate_stitching_parameters(
@@ -18,9 +24,7 @@ def estimate_stitching_parameters(
         raise ValueError("不支持的拼接朝向。")
 
     # 只加载计算模块，不引入 large-image-tool 的 PySide6 界面。
-    source_root = Path(__file__).resolve().parents[1] / "large-image-tool" / "src"
-    if source_root.is_dir() and str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
+    _enable_large_image_source()
     try:
         from PIL import Image
         from large_image_tool.models import ScanPattern, StartCorner, TileRecord, TileSet
@@ -45,7 +49,7 @@ def estimate_stitching_parameters(
         elif current_size != size:
             raise ValueError("第一组图像尺寸不一致，无法自动估计。")
 
-    # 沿用 func_img_stitching 的实际放置顺序；不改变已有朝向控件的行为。
+    # 沿用拼接流程实际使用的排列顺序；不改变已有朝向控件的行为。
     corner = {
         ("向左", "向下"): StartCorner.TOP_LEFT,
         ("向右", "向下"): StartCorner.TOP_RIGHT,
@@ -82,3 +86,30 @@ def estimate_stitching_parameters(
         "angle": angle,
         "sample_pairs": len(edges),
     }
+
+
+def directional_median(image, settings, *, preview_scale=None):
+    """Run the original directional filter and pass any alpha channel through."""
+    _enable_large_image_source()
+    try:
+        from large_image_tool.image_ops import as_uint8
+        from large_image_tool.models import MarkFilterSettings, ToolMarkMethod
+        from large_image_tool.toolmarks import preview_tool_marks, remove_tool_marks
+    except ImportError as error:
+        raise RuntimeError("无法加载刀纹滤除模块。请检查同级 large-image-tool 源码和 GUI 依赖。") from error
+
+    cfg = MarkFilterSettings(
+        method=ToolMarkMethod.DIRECTIONAL_1D.value, auto_period=False, **settings
+    )
+    source = as_uint8(image)
+    # The original algorithm expects RGB and applies its correction to every channel.
+    rgb = source[..., :3][..., ::-1] if source.ndim == 3 else source
+    if preview_scale is None:
+        filtered, report = remove_tool_marks(rgb, cfg)
+    else:
+        filtered, report = preview_tool_marks(rgb, cfg, preview_scale)
+    if source.ndim == 3:
+        result = source.copy()
+        result[..., :3] = filtered[..., ::-1]
+        filtered = result
+    return filtered, report

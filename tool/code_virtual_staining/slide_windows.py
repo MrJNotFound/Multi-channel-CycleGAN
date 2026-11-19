@@ -1,5 +1,7 @@
+"""按实际坐标切分图像；末行/末列贴齐图像边缘，通过增加重叠覆盖末端。"""
+
 import os
-import math
+from pathlib import Path
 import cv2
 import tkinter as tk
 from tkinter import filedialog
@@ -7,20 +9,36 @@ import numpy as np
 
 
 def _positions_1d(length: int, window: int, stride: int):
-    """生成一维滑窗起点序列，保证覆盖到末端（允许越界，靠pad补齐）。"""
+    """生成无越界滑窗起点；不足一个步长的末窗向内回移，不重复起点。"""
     if length <= 0:
         raise ValueError("length must be > 0")
     if window <= 0:
         raise ValueError("window must be > 0")
     if stride <= 0:
         raise ValueError("stride must be > 0")
+    if stride > window:
+        raise ValueError("stride must not exceed window size")
 
     if length <= window:
         return [0]
 
-    # 常规网格
-    n = int(math.ceil((length - window) / stride)) + 1
-    return [i * stride for i in range(n)]
+    last = length - window
+    positions = list(range(0, last + 1, stride))
+    if positions[-1] != last:
+        positions.append(last)
+    return positions
+
+
+def create_patch_directory(parent_dir, base_name):
+    """使用空目录，避免重切时遗留的旧 padding 图块参与后续拼接。"""
+    base = Path(parent_dir) / base_name
+    candidate = base
+    suffix = 2
+    while candidate.exists() and (not candidate.is_dir() or any(candidate.iterdir())):
+        candidate = base.with_name(f"{base.name}_{suffix}")
+        suffix += 1
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
 
 
 def sliding_window_patches(
@@ -33,7 +51,10 @@ def sliding_window_patches(
 ):
     """对单张图生成滑窗patch。
 
-    返回: list[ (x, y, patch_bgr) ]，其中 (x,y) 为左上角在原图坐标系下的起点(可使patch越界)。
+    返回: list[(x, y, patch_bgr)]，坐标为切分图像（采样后）的实际起点。
+    末行/末列向内重叠，均不越界、不填充。图像某一边小于窗口时，该边按
+    图像实际长度输出；同一图像的所有 patch 仍具有相同尺寸。
+    pad_value_bgr 仅为兼容旧调用保留，不再使用。
     """
     if img is None:
         raise ValueError("img is None")
@@ -56,26 +77,11 @@ def sliding_window_patches(
     xs = _positions_1d(W, window_w, stride_x)
     ys = _positions_1d(H, window_h, stride_y)
 
-    pad_value = np.array(pad_value_bgr, dtype=np.uint8).reshape(1, 1, 3)
-
+    patch_w, patch_h = min(W, window_w), min(H, window_h)
     out = []
     for y in ys:
         for x in xs:
-            # 需要从原图取的有效区域
-            x0 = max(0, x)
-            y0 = max(0, y)
-            x1 = min(W, x + window_w)
-            y1 = min(H, y + window_h)
-
-            patch = np.tile(pad_value, (window_h, window_w, 1))
-
-            # 放回patch中的位置（只在右/下越界时pad；若x/y为负也能工作，但本脚本不会生成负起点）
-            px0 = x0 - x
-            py0 = y0 - y
-            px1 = px0 + (x1 - x0)
-            py1 = py0 + (y1 - y0)
-
-            patch[py0:py1, px0:px1] = img[y0:y1, x0:x1]
+            patch = img[y:y + patch_h, x:x + patch_w].copy()
             out.append((x, y, patch))
 
     return out, xs, ys, (stride_x, stride_y)
@@ -109,7 +115,6 @@ if __name__ == "__main__":
     wh_var = tk.IntVar(value=1024)
     ow_var = tk.IntVar(value=512)
     oh_var = tk.IntVar(value=512)
-    pad_var = tk.StringVar(value="white")
     ext_var = tk.StringVar(value=".png")
 
     param_win = tk.Toplevel(root)
@@ -133,8 +138,8 @@ if __name__ == "__main__":
     tk.Label(param_win, text="重叠高度:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
     tk.Entry(param_win, textvariable=oh_var, width=8).grid(row=pr, column=1, sticky="w")
     pr += 1
-    tk.Label(param_win, text="边缘填充色:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
-    tk.OptionMenu(param_win, pad_var, "white", "black").grid(row=pr, column=1, sticky="w")
+    tk.Label(param_win, text="末端向内重叠，不填充；小于窗口时按实际尺寸输出。",
+             font=("", 10)).grid(row=pr, column=0, columnspan=2, padx=15, pady=6)
     pr += 1
     tk.Label(param_win, text="输出格式:", font=("", 11)).grid(row=pr, column=0, sticky="e", padx=(15, 2), pady=3)
     tk.OptionMenu(param_win, ext_var, ".png", ".jpg", ".tif").grid(row=pr, column=1, sticky="w")
@@ -151,7 +156,6 @@ if __name__ == "__main__":
     window_h = wh_var.get()
     overlap_w = ow_var.get()
     overlap_h = oh_var.get()
-    pad_value_bgr = (255, 255, 255) if pad_var.get() == "white" else (0, 0, 0)
     ext = ext_var.get()
 
     print(f"共选择 {len(img_paths)} 张图像")
@@ -172,8 +176,7 @@ if __name__ == "__main__":
 
             # 按图像名创建子文件夹
             base_name = os.path.splitext(os.path.basename(img_path))[0]
-            save_dir = os.path.join(parent_dir, base_name)
-            os.makedirs(save_dir, exist_ok=True)
+            save_dir = create_patch_directory(parent_dir, base_name)
 
             patches, xs, ys, (sx, sy) = sliding_window_patches(
                 img,
@@ -181,7 +184,6 @@ if __name__ == "__main__":
                 window_h=window_h,
                 overlap_w=overlap_w,
                 overlap_h=overlap_h,
-                pad_value_bgr=pad_value_bgr,
             )
 
             for x, y, patch in patches:
